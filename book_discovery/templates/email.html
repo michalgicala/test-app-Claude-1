@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nowe książki non-fiction</title>
+<style>
+  body { margin:0; padding:0; background:#f5f0eb; font-family: Georgia, 'Times New Roman', serif; color:#2c1810; }
+  .wrapper { max-width:640px; margin:0 auto; background:#fff; }
+  .header { background: linear-gradient(135deg,#4a2c17,#7a4527); padding:32px 32px 24px; color:#fff; }
+  .header h1 { margin:0 0 4px; font-size:22px; letter-spacing:-0.02em; }
+  .header p { margin:0; font-size:13px; opacity:0.75; }
+  .section { padding:24px 32px; }
+  .section-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#8b5e3c; border-bottom:2px solid #e8d5c5; padding-bottom:6px; margin:0 0 20px; }
+  /* Book of Fortnight */
+  .fotw { background:#fdf6ee; border:1px solid #e0d0c5; border-radius:10px; padding:20px; margin-bottom:8px; }
+  .fotw-badge { display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#fff; background:#8b5e3c; border-radius:50px; padding:3px 10px; margin-bottom:12px; }
+  .fotw-inner { display:flex; gap:16px; }
+  .fotw-cover img { width:80px; height:115px; object-fit:cover; border-radius:4px; box-shadow:2px 3px 8px rgba(0,0,0,0.2); display:block; }
+  .fotw-cover-placeholder { width:80px; height:115px; background:#e8d5c5; border-radius:4px; }
+  .fotw-info { flex:1; }
+  .fotw-title { font-size:16px; font-weight:700; margin:0 0 4px; }
+  .fotw-title a { color:#2c1810; text-decoration:none; }
+  .fotw-title a:hover { text-decoration:underline; }
+  .fotw-author { font-size:13px; color:#8b5e3c; font-style:italic; margin:0 0 8px; }
+  .rating { font-size:13px; color:#7a5c4a; margin:0 0 10px; }
+  .rating .stars { color:#d4a017; }
+  .hook { font-size:13px; line-height:1.6; color:#3a2218; margin:0 0 10px; }
+  .links { display:flex; gap:10px; flex-wrap:wrap; }
+  .link-btn { font-size:12px; padding:5px 12px; border-radius:50px; text-decoration:none; font-family:Georgia,serif; }
+  .link-main { background:#8b5e3c; color:#fff; }
+  .link-empik { background:#f0ddd0; color:#6b4527; }
+  /* Regular book list */
+  .book-item { padding:16px 0; border-bottom:1px solid #f0e4da; display:flex; gap:14px; }
+  .book-item:last-child { border-bottom:none; }
+  .book-thumb img { width:56px; height:80px; object-fit:cover; border-radius:3px; box-shadow:1px 2px 5px rgba(0,0,0,0.15); display:block; }
+  .book-thumb-placeholder { width:56px; height:80px; background:#e8d5c5; border-radius:3px; }
+  .book-body { flex:1; }
+  .book-body h3 { margin:0 0 3px; font-size:14px; font-weight:700; }
+  .book-body h3 a { color:#2c1810; text-decoration:none; }
+  .book-body h3 a:hover { text-decoration:underline; }
+  .book-body .author { font-size:12px; color:#8b5e3c; font-style:italic; margin:0 0 6px; }
+  .book-body .hook { font-size:12px; line-height:1.55; color:#5a3c28; margin:0 0 8px; }
+  .book-body .links { display:flex; gap:8px; flex-wrap:wrap; }
+  .book-body .link-btn { font-size:11px; padding:3px 10px; }
+  /* Category header */
+  .cat-header { background:#fdf6ee; border-left:4px solid #c9936e; padding:8px 14px; margin:0 0 4px; border-radius:0 6px 6px 0; }
+  .cat-header h2 { margin:0; font-size:13px; font-weight:700; color:#6b4527; }
+  .cat-header span { font-size:11px; color:#a07050; }
+  /* Footer */
+  .footer { background:#4a2c17; color:rgba(255,255,255,0.7); padding:20px 32px; font-size:12px; line-height:1.6; }
+  .footer a { color:#e8a87c; }
+  .footer p { margin:4px 0; }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>📚 Nowe książki non-fiction</h1>
+    <p>{{ run_date }} &nbsp;·&nbsp; {{ new_count }} nowych pozycji &nbsp;·&nbsp; {{ total_in_db }} łącznie w bazie</p>
+  </div>
+
+  {% if book_of_fortnight %}
+  <!-- Book of the Fortnight -->
+  <div class="section">
+    <div class="section-title">Książka dwutygodnia</div>
+    <div class="fotw">
+      <div class="fotw-badge">⭐ Wyróżniona</div>
+      <div class="fotw-inner">
+        <div class="fotw-cover">
+          {% if book_of_fortnight.cover_url %}
+          <img src="{{ book_of_fortnight.cover_url }}" alt="Okładka">
+          {% else %}
+          <div class="fotw-cover-placeholder"></div>
+          {% endif %}
+        </div>
+        <div class="fotw-info">
+          <div class="fotw-title"><a href="{{ book_of_fortnight.url }}">{{ book_of_fortnight.title }}</a></div>
+          <div class="fotw-author">{{ book_of_fortnight.author }}</div>
+          <div class="rating">
+            <span class="stars">★★★★★</span>
+            {{ "%.1f"|format(book_of_fortnight.rating) }}/10
+            &nbsp;({{ book_of_fortnight.ratings_count }} ocen)
+          </div>
+          <div class="hook">{{ book_of_fortnight.description_ai or book_of_fortnight.description or '' }}</div>
+          <div class="links">
+            <a href="{{ book_of_fortnight.url }}" class="link-btn link-main">lubimyczytac.pl</a>
+            {% if book_of_fortnight.empik_url %}
+            <a href="{{ book_of_fortnight.empik_url }}" class="link-btn link-empik">Empik</a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Books grouped by category -->
+  {% for category, books in grouped_books.items() %}
+  <div class="section">
+    <div class="cat-header">
+      <h2>{{ category }}</h2>
+      <span>{{ books|length }} {% if books|length == 1 %}pozycja{% elif books|length < 5 %}pozycje{% else %}pozycji{% endif %}</span>
+    </div>
+
+    {% for book in books %}
+    {% if book.book_id != (book_of_fortnight.book_id if book_of_fortnight else '') %}
+    <div class="book-item">
+      <div class="book-thumb">
+        {% if book.cover_url %}
+        <img src="{{ book.cover_url }}" alt="Okładka">
+        {% else %}
+        <div class="book-thumb-placeholder"></div>
+        {% endif %}
+      </div>
+      <div class="book-body">
+        <h3><a href="{{ book.url }}">{{ book.title }}</a></h3>
+        <div class="author">{{ book.author }}</div>
+        <div class="rating">
+          <span class="stars">★</span>
+          {{ "%.1f"|format(book.rating) }}/10 &nbsp;({{ book.ratings_count }} ocen)
+        </div>
+        {% if book.description_ai or book.description %}
+        <div class="hook">{{ book.description_ai or book.description }}</div>
+        {% endif %}
+        <div class="links">
+          <a href="{{ book.url }}" class="link-btn link-main">lubimyczytac.pl</a>
+          {% if book.empik_url %}
+          <a href="{{ book.empik_url }}" class="link-btn link-empik">Empik</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>📊 Baza danych: <a href="{{ sheet_url }}">Google Sheets</a></p>
+    <p>Aby oznaczyć książkę jako przeczytaną, wpisz TRUE w kolumnie <strong>already_read</strong> w arkuszu.</p>
+    <p>Następne skanowanie: ok. {{ next_run_date }}</p>
+    <p style="margin-top:12px;opacity:0.5;font-size:11px;">Automatycznie wygenerowane przez book-discovery · GitHub Actions</p>
+  </div>
+
+</div>
+</body>
+</html>
