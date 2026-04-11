@@ -1,166 +1,185 @@
-# Book Discovery — Automated Polish Non-Fiction Alerts
+# Book Discovery
 
-Automatically scans [lubimyczytac.pl](https://lubimyczytac.pl) every two weeks
-for highly-rated Polish non-fiction books and emails you a curated digest of new finds.
+Co dwa tygodnie automatycznie skanuje [lubimyczytac.pl](https://lubimyczytac.pl) w poszukiwaniu nowych polskich książek non-fiction i wysyła Ci digest emailowy z nowymi pozycjami.
 
-**What it does:**
-- Scrapes 5 non-fiction categories (literatura faktu, biografie, historia, psychologia, literatura popularnonaukowa)
-- Filters books with rating ≥ 7.0 / 10 and ≥ 20 ratings
-- Stores all discovered books in a Google Sheet (your human-readable database)
-- Emails only *new* books — previously emailed books are never repeated
-- Highlights the "Book of the Fortnight" (highest composite score)
-- Groups books by category in the email
-- Generates a Polish "why read this" blurb via Gemini AI (free tier)
-- Includes Empik.com search links for every book
-- Runs automatically via GitHub Actions — no server needed
+**Kryteria filtrowania:** ocena ≥ 7,0 / 10 oraz ≥ 20 ocen
 
-**Cost: entirely free.**
+**Kategorie:** Literatura faktu, Biografie, Historia, Psychologia, Literatura popularnonaukowa
+
+**Koszt: całkowicie bezpłatne.**
 
 ---
 
-## One-Time Setup (~45 minutes)
+## Jak to działa
 
-### Step 1 — Google Cloud (Sheets API)
+```
+GitHub Actions (co 2 tygodnie)
+  └─ Python scraper
+       ├─ Scraping lubimyczytac.pl (curl_cffi + BeautifulSoup)
+       ├─ Opisy AI via Gemini (opcjonalne, darmowe)
+       └─ Zapis nowych książek do Google Sheets
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) → **New Project** → name it `book-discovery`
-2. **APIs & Services → Enable APIs** → search and enable:
+Google Apps Script (codziennie o 10:00)
+  └─ Sprawdza czy są nowe książki w arkuszu
+       └─ Jeśli tak → wysyła email via GmailApp (bez hasła)
+            └─ Oznacza książki jako wysłane w arkuszu
+```
+
+**Bezpieczeństwo — co jest publiczne:**
+- Kod w repo (`.py`, `.gs`, `.yml`) — bez żadnych danych wrażliwych ✅
+- Sekrety GitHub — zaszyfrowane, niewidoczne nawet w publicznym repo ✅
+- Właściwości Apps Script — prywatne w edytorze Apps Script ✅
+
+---
+
+## Jednorazowa konfiguracja (~45 minut)
+
+### Krok 1 — Google Cloud (dostęp do Sheets)
+
+1. Wejdź na [console.cloud.google.com](https://console.cloud.google.com) → **Nowy projekt** → nazwa: `book-discovery`
+2. **API i usługi → Włącz API** → wyszukaj i włącz:
    - **Google Sheets API**
    - **Google Drive API**
-3. **APIs & Services → Credentials → Create Credentials → Service Account**
-   - Name: `book-bot` → Create → Done
-4. Click the created service account → **Keys** tab → **Add Key → Create new key → JSON**
-   - Download the JSON file. **Do not commit it to git.**
-5. Copy the `client_email` value from the JSON (looks like `book-bot@project-id.iam.gserviceaccount.com`)
+3. **API i usługi → Dane logowania → Utwórz dane logowania → Konto usługi**
+   - Nazwa: `book-bot` → Utwórz → Gotowe
+4. Kliknij konto usługi → zakładka **Klucze** → **Dodaj klucz → Utwórz nowy klucz → JSON**
+   - Pobierz plik JSON. **Nie commituj go do repo.**
+5. Skopiuj wartość `client_email` z pliku JSON (wygląda jak `book-bot@projekt.iam.gserviceaccount.com`)
 
-### Step 2 — Google Sheet
+### Krok 2 — Google Sheets
 
-1. Go to [sheets.google.com](https://sheets.google.com) → create a new spreadsheet
-2. Name it: **Book Discovery Database**
-3. **Share** the sheet with the service account email (from Step 1) → **Editor** access
-4. Copy the spreadsheet ID from the URL:
+1. Wejdź na [sheets.google.com](https://sheets.google.com) → utwórz nowy arkusz
+2. Nazwij go: **Book Discovery**
+3. **Udostępnij** arkusz adresowi `client_email` z kroku 1 → uprawnienia: **Edytor**
+4. Skopiuj ID arkusza z URL:
    ```
-   https://docs.google.com/spreadsheets/d/THIS_IS_THE_ID/edit
+   https://docs.google.com/spreadsheets/d/TO_JEST_ID/edit
    ```
 
-### Step 3 — Gmail App Password
+### Krok 3 — Klucz Gemini API (opcjonalny, darmowy)
 
-1. Go to [myaccount.google.com/security](https://myaccount.google.com/security)
-2. Ensure **2-Step Verification** is ON
-3. Search for **App Passwords** → Create → name it `Book Bot` → copy the 16-character password
+1. Wejdź na [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+2. **Utwórz klucz API** → skopiuj
 
-### Step 4 — Gemini API Key (free)
+### Krok 4 — Upublicznij repo
 
-1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-2. Sign in → **Create API key** → copy it
+GitHub Actions jest bezpłatny bez limitu minut dla **publicznych repozytoriów**.
 
-### Step 5 — Make the Repository Public
+**Settings → General → Danger Zone → Change visibility → Public**
 
-GitHub Actions is free with unlimited minutes on **public** repositories.
+### Krok 5 — Sekrety GitHub
 
-Go to **Settings → General → Danger Zone → Change visibility → Public**
+**Settings → Secrets and variables → Actions → New repository secret**
 
-### Step 6 — Add GitHub Secrets
+Dodaj **3 sekrety** (nie 5 jak wcześniej — brak Gmail):
 
-Go to your repo → **Settings → Secrets and variables → Actions → New repository secret**
-
-Add these 6 secrets:
-
-| Secret name | Value |
+| Nazwa sekretu | Wartość |
 |---|---|
-| `GOOGLE_SHEETS_CREDENTIALS_JSON` | Full contents of the service account JSON file |
-| `GOOGLE_SHEET_ID` | The spreadsheet ID from Step 2 |
-| `GMAIL_USER` | Your Gmail address |
-| `GMAIL_APP_PASSWORD` | The 16-character App Password from Step 3 |
-| `RECIPIENT_EMAIL` | Email address to receive digests (can be same as above) |
-| `GEMINI_API_KEY` | API key from Step 4 |
+| `GOOGLE_SHEETS_CREDENTIALS_JSON` | Pełna zawartość pliku JSON z kroku 1 |
+| `GOOGLE_SHEET_ID` | ID arkusza z kroku 2 |
+| `GEMINI_API_KEY` | Klucz z kroku 3 (lub pomiń jeśli nie chcesz opisów AI) |
 
-### Step 7 — Initialize the Database
+### Krok 6 — Google Apps Script (wysyłka emaili)
 
-Run the setup script once **locally** (or skip to Step 8 and let the first GitHub Actions run do it):
+1. Wejdź na [script.google.com](https://script.google.com) → **Nowy projekt**
+2. Wklej całą zawartość pliku `apps_script/BookDiscovery.gs`
+3. Zapisz projekt (Ctrl+S)
+4. **Ustawienia projektu → Właściwości skryptu** → dodaj:
+
+   | Właściwość | Wartość |
+   |---|---|
+   | `SPREADSHEET_ID` | ID arkusza z kroku 2 |
+   | `RECIPIENT_EMAIL` | Twój adres email (na który mają przychodzić maile) |
+   | `GEMINI_API_KEY` | Klucz z kroku 3 (opcjonalnie) |
+
+5. W edytorze wybierz funkcję **`setupTrigger`** → kliknij **Uruchom**
+   - Przy pierwszym uruchomieniu Google poprosi o uprawnienia — zaakceptuj
+   - To ustawia codzienne sprawdzanie o 10:00
+
+### Krok 7 — Inicjalizacja arkusza
+
+Uruchom skrypt konfiguracyjny lokalnie (lub pomiń — pierwsze uruchomienie GitHub Actions zrobi to automatycznie):
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
-# Set environment variables (or create a .env file — see .env.example)
-export GOOGLE_SHEETS_CREDENTIALS_JSON='{ ... full JSON ... }'
-export GOOGLE_SHEET_ID='your_sheet_id'
-# ... etc.
+# Ustaw zmienne środowiskowe (lub stwórz plik .env na podstawie .env.example)
+export GOOGLE_SHEETS_CREDENTIALS_JSON='{ ...pełny JSON... }'
+export GOOGLE_SHEET_ID='twoje_id_arkusza'
+export GEMINI_API_KEY='twój_klucz'  # opcjonalne
 
-# Create the sheet tabs and headers
 python scripts/setup_sheet.py
 ```
 
-### Step 8 — Test Run
+### Krok 8 — Test
 
-1. Go to your repo → **Actions** tab → **Book Discovery** workflow
-2. Click **Run workflow** → **Run workflow**
-3. Watch the logs — the run takes ~5–10 minutes
-4. Check your email and Google Sheet for results
-
----
-
-## Automatic Schedule
-
-The workflow runs automatically at **08:00 UTC** on the **1st and 15th** of each month.
-
-You can also trigger it manually at any time from the Actions tab.
+1. **Actions** → **Book Discovery** → **Run workflow** → uruchom ręcznie
+2. Po ~5-10 minutach sprawdź Google Sheets — powinny pojawić się nowe książki
+3. Uruchom `sendNewBooksDigest` w edytorze Apps Script → sprawdź email
 
 ---
 
-## Customising via Google Sheet
+## Harmonogram
 
-Open the **preferences** tab in your Google Sheet to adjust settings without touching code:
+| Co | Kiedy |
+|---|---|
+| GitHub Actions scraping | 1. i 15. każdego miesiąca o 8:00 UTC |
+| Apps Script — sprawdzenie i wysyłka emaila | Codziennie o 10:00 (wysyła tylko gdy są nowe książki) |
 
-| Key | Default | Description |
+---
+
+## Konfiguracja przez arkusz
+
+W zakładce **preferences** możesz zmieniać ustawienia bez modyfikowania kodu:
+
+| Klucz | Domyślnie | Opis |
 |---|---|---|
-| `min_rating` | `7.0` | Minimum average rating (0–10) |
-| `min_ratings_count` | `20` | Minimum number of ratings |
-| `recipient_email` | *(from secret)* | Override the recipient email |
+| `min_rating` | `7.0` | Minimalna ocena (skala 0–10) |
+| `min_ratings_count` | `20` | Minimalna liczba ocen |
 
 ---
 
-## Marking Books as Read
+## Oznaczanie przeczytanych książek
 
-In the **books** tab, find any book and set the `already_read` column to `TRUE`.
-That book will never appear in future email digests.
+W zakładce **books** znajdź dowolną książkę i wpisz `TRUE` w kolumnie `already_read`.
+Ta książka nie pojawi się w kolejnych emailach.
 
 ---
 
-## Project Structure
+## Struktura projektu
 
 ```
-book_discovery/
-├── main.py              # Orchestrator
-├── scraper.py           # lubimyczytac.pl scraper (curl_cffi + BeautifulSoup)
-├── sheets_client.py     # Google Sheets read/write
-├── email_sender.py      # Gmail SMTP digest
-├── ai_descriptions.py   # Gemini AI blurbs
-├── models.py            # Book dataclass
-├── config.py            # Constants and Config loader
-└── templates/
-    ├── email.html       # HTML email template
-    └── email.txt        # Plain-text email template
+book_discovery/        Python scraper (GitHub Actions)
+  main.py              Główny orchestrator
+  scraper.py           Scraping lubimyczytac.pl
+  sheets_client.py     Odczyt/zapis Google Sheets
+  ai_descriptions.py   Opisy AI via Gemini
+  models.py            Dataclass Book
+  config.py            Konfiguracja i stałe
+
+apps_script/
+  BookDiscovery.gs     Google Apps Script — wysyłka emaili
 
 scripts/
-└── setup_sheet.py       # One-time sheet initializer
+  setup_sheet.py       Jednorazowa inicjalizacja arkusza
 
 .github/workflows/
-└── book_discovery.yml   # GitHub Actions cron workflow
+  book_discovery.yml   GitHub Actions cron
 ```
 
 ---
 
-## Troubleshooting
+## Rozwiązywanie problemów
 
-**Run failed — check the log:**
-Go to Actions → the failed run → download the `run-log-N` artifact.
+**Scraping nie działa (błąd 403):**
+Scraper używa `curl_cffi` do imitowania Chrome. Jeśli problem nadal występuje, zaktualizuj wersję `impersonate` w `scraper.py`.
 
-**403 error from lubimyczytac.pl:**
-The scraper uses `curl_cffi` to impersonate Chrome. If errors persist, update the `impersonate` version in `scraper.py`.
+**Email nie przychodzi:**
+Sprawdź logi w edytorze Apps Script (Wykonania → ostatnie uruchomienie).
+Upewnij się że właściwości skryptu są ustawione poprawnie.
 
-**Email not received:**
-Check Gmail spam folder. Verify the App Password is correct and 2FA is enabled.
+**Arkusz nie jest aktualizowany:**
+Sprawdź czy konto usługi ma uprawnienia Edytora do arkusza.
 
-**Sheet not updating:**
-Confirm the service account email has Editor access to the spreadsheet.
+**Logi GitHub Actions:**
+Actions → ostatni run → pobierz artefakt `run-log-N`.

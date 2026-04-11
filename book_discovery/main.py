@@ -6,15 +6,16 @@ Flow:
   2. Load preferences from Google Sheets
   3. Get already-known book IDs from Google Sheets
   4. Scrape lubimyczytac.pl categories
-  5. Filter to only truly new books (not in DB, not already emailed)
+  5. Filter to only truly new books (not yet in DB)
   6. Generate AI descriptions via Gemini
-  7. Send digest email
-  8. Append new books to the sheet + mark as emailed
-  9. Log the run
+  7. Append new books to Google Sheets
+  8. Log the run
+
+Email is handled separately by Google Apps Script (apps_script/BookDiscovery.gs),
+which reads the sheet and sends via GmailApp — no password required.
 """
 
 import logging
-import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -25,30 +26,26 @@ from .sheets_client import (
     get_existing_book_ids,
     get_already_read_ids,
     append_books,
-    mark_books_emailed,
     log_run,
-    get_total_book_count,
     load_preferences,
 )
 from .ai_descriptions import enrich_books
-from .email_sender import send_digest
 
-# ── Logging setup ──────────────────────────────────────────────────────────────
+# ── Logging ────────────────────────────────────────────────────────────────────
 log_path = Path("run.log")
-handlers = [
-    logging.StreamHandler(sys.stdout),
-    logging.FileHandler(log_path, encoding="utf-8"),
-]
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
-    handlers=handlers,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_path, encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
 
 def _apply_preferences(config: Config, prefs: dict) -> Config:
-    """Override config values with user preferences from the sheet."""
+    """Override config thresholds with user preferences from the sheet."""
     try:
         config.min_rating = float(prefs.get("min_rating", config.min_rating))
     except ValueError:
@@ -59,12 +56,6 @@ def _apply_preferences(config: Config, prefs: dict) -> Config:
         )
     except ValueError:
         pass
-
-    # Recipient email override
-    override_email = prefs.get("recipient_email", "").strip()
-    if override_email:
-        config.recipient_email = override_email
-
     return config
 
 
@@ -80,7 +71,6 @@ def main() -> None:
         logger.error("Configuration error: %s", e)
         sys.exit(1)
 
-    email_sent = False
     error_log = ""
     new_books_found = 0
 
@@ -93,18 +83,18 @@ def main() -> None:
             config.min_rating, config.min_ratings_count,
         )
 
-        # 3. Load known book IDs (already in DB) and already-read IDs
+        # 3. Load known book IDs
         existing_ids = get_existing_book_ids(config)
         already_read_ids = get_already_read_ids(config)
 
-        # 4. Scrape categories
+        # 4. Scrape
         scraped_books = scrape_all_categories(
             categories=config.categories,
             min_rating=config.min_rating,
             min_ratings_count=config.min_ratings_count,
         )
 
-        # 5. Filter to genuinely new, not-already-read books
+        # 5. Filter to genuinely new books
         new_books = [
             b for b in scraped_books
             if b.book_id not in existing_ids
@@ -117,42 +107,36 @@ def main() -> None:
         )
 
         if not new_books:
-            logger.info("No new books found. Skipping email.")
+            logger.info("No new books found — nothing to write.")
         else:
             # 6. Enrich with AI descriptions
             new_books = enrich_books(new_books, config.gemini_api_key)
 
-            # 7. Append new books to sheet first (so DB is updated even if email fails)
+            # 7. Append to sheet (emailed_date left empty — Apps Script fills it after sending)
             append_books(new_books, config)
-
-            # 8. Send digest
-            total_in_db = get_total_book_count(config)
-            send_digest(new_books, config, total_in_db)
-            email_sent = True
-
-            # 9. Mark books as emailed
-            mark_books_emailed(
-                [b.book_id for b in new_books], config
+            logger.info(
+                "Wrote %d new books to sheet. "
+                "Google Apps Script will send the email digest.",
+                new_books_found,
             )
 
     except Exception as e:
-        logger.exception("Unexpected error during run: %s", e)
+        logger.exception("Unexpected error: %s", e)
         error_log = str(e)
     finally:
-        # Always log the run
         try:
             log_run(
                 config=config,
                 new_books_found=new_books_found,
-                email_sent=email_sent,
+                email_sent=False,   # email handled by Apps Script
                 categories_scraped=[label for _, _, label in CATEGORIES],
-                books_in_db_total=0,   # Approximate — not critical
+                books_in_db_total=0,
                 error_log=error_log,
             )
         except Exception as log_err:
             logger.error("Failed to write run log: %s", log_err)
 
-    logger.info("Run complete. Email sent: %s", email_sent)
+    logger.info("Scraping run complete.")
 
 
 if __name__ == "__main__":

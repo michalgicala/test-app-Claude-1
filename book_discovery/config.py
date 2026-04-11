@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import json
 from dataclasses import dataclass, field
@@ -6,11 +7,11 @@ BASE_URL = "https://lubimyczytac.pl"
 
 # (category_id, url_slug, human_label)
 CATEGORIES = [
-    (46,  "literatura-faktu",         "Literatura faktu / Reportaż"),
-    (5,   "biografie-i-autobiografie", "Biografie i Autobiografie"),
-    (10,  "historia",                  "Historia"),
-    (84,  "psychologia",               "Psychologia"),
-    (31,  "literatura-popularnonaukowa", "Literatura popularnonaukowa"),
+    (46,  "literatura-faktu",           "Literatura faktu / Reportaż"),
+    (5,   "biografie-i-autobiografie",  "Biografie i Autobiografie"),
+    (10,  "historia",                   "Historia"),
+    (84,  "psychologia",                "Psychologia"),
+    (31,  "literatura-popularnonaukowa","Literatura popularnonaukowa"),
 ]
 
 # Scraping thresholds
@@ -47,9 +48,8 @@ EMAIL_LOG_HEADERS = [
 PREFERENCES_HEADERS = ["preference_key", "preference_value", "notes"]
 
 DEFAULT_PREFERENCES = [
-    ["min_rating",            "7.0",  "Minimum average rating (out of 10)"],
-    ["min_ratings_count",     "20",   "Minimum number of ratings"],
-    ["recipient_email",       "",     "Override recipient email (leave blank to use env var)"],
+    ["min_rating",        "7.0", "Minimalna średnia ocena (0-10)"],
+    ["min_ratings_count", "20",  "Minimalna liczba ocen"],
 ]
 
 
@@ -57,9 +57,6 @@ DEFAULT_PREFERENCES = [
 class Config:
     google_sheets_credentials: dict
     google_sheet_id: str
-    gmail_user: str
-    gmail_app_password: str
-    recipient_email: str
     gemini_api_key: str
     min_rating: float = MIN_RATING
     min_ratings_count: int = MIN_RATINGS_COUNT
@@ -76,8 +73,5 @@ class Config:
         return cls(
             google_sheets_credentials=creds,
             google_sheet_id=os.environ["GOOGLE_SHEET_ID"],
-            gmail_user=os.environ["GMAIL_USER"],
-            gmail_app_password=os.environ["GMAIL_APP_PASSWORD"],
-            recipient_email=os.environ["RECIPIENT_EMAIL"],
             gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
         )
