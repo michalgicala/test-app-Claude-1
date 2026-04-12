@@ -28,6 +28,7 @@ from .sheets_client import (
     append_books,
     log_run,
     load_preferences,
+    setup_spreadsheet,
 )
 from .ai_descriptions import enrich_books
 
@@ -75,7 +76,11 @@ def main() -> None:
     new_books_found = 0
 
     try:
-        # 2. Load preferences
+        # 2. Ensure sheet tabs exist (safe to call every run — idempotent)
+        logger.info("Initialising spreadsheet tabs if needed...")
+        setup_spreadsheet(config)
+
+        # 3. Load preferences
         prefs = load_preferences(config)
         config = _apply_preferences(config, prefs)
         logger.info(
@@ -83,18 +88,18 @@ def main() -> None:
             config.min_rating, config.min_ratings_count,
         )
 
-        # 3. Load known book IDs
+        # 4. Load known book IDs
         existing_ids = get_existing_book_ids(config)
         already_read_ids = get_already_read_ids(config)
 
-        # 4. Scrape
+        # 5. Scrape
         scraped_books = scrape_all_categories(
             categories=config.categories,
             min_rating=config.min_rating,
             min_ratings_count=config.min_ratings_count,
         )
 
-        # 5. Filter to genuinely new books
+        # 6. Filter to genuinely new books
         new_books = [
             b for b in scraped_books
             if b.book_id not in existing_ids
@@ -109,10 +114,10 @@ def main() -> None:
         if not new_books:
             logger.info("No new books found — nothing to write.")
         else:
-            # 6. Enrich with AI descriptions
+            # 7. Enrich with AI descriptions
             new_books = enrich_books(new_books, config.gemini_api_key)
 
-            # 7. Append to sheet (emailed_date left empty — Apps Script fills it after sending)
+            # 8. Append to sheet (emailed_date left empty — Apps Script fills it after sending)
             append_books(new_books, config)
             logger.info(
                 "Wrote %d new books to sheet. "
