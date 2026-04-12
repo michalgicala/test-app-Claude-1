@@ -1,0 +1,43 @@
+name: Book Discovery
+
+on:
+  schedule:
+    # Runs at 08:00 UTC on the 1st and 15th of every month (~every 2 weeks)
+    - cron: '0 8 1,15 * *'
+  # Allow manual trigger from the GitHub Actions UI (useful for testing)
+  workflow_dispatch:
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scrape and save to Google Sheets
+        # Secrets are encrypted by GitHub and never visible in logs or to the public.
+        # No Gmail credentials needed — email is sent by Google Apps Script.
+        env:
+          GOOGLE_SHEETS_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python -m book_discovery.main
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log-${{ github.run_number }}
+          path: run.log
+          retention-days: 30

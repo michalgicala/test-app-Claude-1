@@ -1,4 +1,8 @@
-node_modules/
-dist/
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.json
+!.env.example
+run.log
 .DS_Store
-*.local
