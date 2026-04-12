@@ -19,6 +19,7 @@ class Book:
     tags: list[str] = field(default_factory=list)
     empik_url: Optional[str] = None
     already_read: bool = False
+    published_date: Optional[str] = None   # ISO date string (YYYY-MM-DD or YYYY-01-01)
 
     @property
     def composite_score(self) -> float:

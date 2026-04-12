@@ -17,10 +17,13 @@ which reads the sheet and sends via GmailApp — no password required.
 
 import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
-from .config import Config, CATEGORIES
+from .config import (
+    Config, CATEGORIES,
+    PUBLICATION_WINDOW_DAYS, FIRST_RUN_PUBLICATION_WINDOW_DAYS,
+)
 from .scraper import scrape_all_categories
 from .sheets_client import (
     get_existing_book_ids,
@@ -92,14 +95,28 @@ def main() -> None:
         existing_ids = get_existing_book_ids(config)
         already_read_ids = get_already_read_ids(config)
 
-        # 5. Scrape
+        # 5. Determine publication date cutoff
+        # First run (empty sheet): include books from last 2 months
+        # Regular run: include books from last 2 weeks
+        is_first_run = len(existing_ids) == 0
+        days_back = FIRST_RUN_PUBLICATION_WINDOW_DAYS if is_first_run else PUBLICATION_WINDOW_DAYS
+        cutoff_date = date.today() - timedelta(days=days_back)
+        logger.info(
+            "%s — publication cutoff date: %s (last %d days)",
+            "First run" if is_first_run else "Regular run",
+            cutoff_date.isoformat(),
+            days_back,
+        )
+
+        # 6. Scrape
         scraped_books = scrape_all_categories(
             categories=config.categories,
             min_rating=config.min_rating,
             min_ratings_count=config.min_ratings_count,
+            cutoff_date=cutoff_date,
         )
 
-        # 6. Filter to genuinely new books
+        # 7. Filter to genuinely new books (not already in our database)
         new_books = [
             b for b in scraped_books
             if b.book_id not in existing_ids
@@ -107,17 +124,18 @@ def main() -> None:
         ]
         new_books_found = len(new_books)
         logger.info(
-            "New books after deduplication: %d (scraped %d total)",
+            "New books after deduplication: %d (scraped %d total, %d already in DB)",
             new_books_found, len(scraped_books),
+            len(scraped_books) - new_books_found,
         )
 
         if not new_books:
             logger.info("No new books found — nothing to write.")
         else:
-            # 7. Enrich with AI descriptions
+            # 8. Enrich with AI descriptions
             new_books = enrich_books(new_books, config.gemini_api_key)
 
-            # 8. Append to sheet (emailed_date left empty — Apps Script fills it after sending)
+            # 9. Append to sheet (emailed_date left empty — Apps Script fills it after sending)
             append_books(new_books, config)
             logger.info(
                 "Wrote %d new books to sheet. "

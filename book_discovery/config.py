@@ -23,6 +23,11 @@ MAX_PAGES_PER_CATEGORY: int = 10
 REQUEST_DELAY_MIN: float = 2.0
 REQUEST_DELAY_MAX: float = 4.0
 
+# Publication date filter windows (days back from today)
+# Books older than this are excluded from results
+PUBLICATION_WINDOW_DAYS: int = 14        # Regular run: last 2 weeks
+FIRST_RUN_PUBLICATION_WINDOW_DAYS: int = 60  # First run: last 2 months
+
 # Gemini model — free tier (1 000 req/day on gemini-2.0-flash-lite)
 GEMINI_MODEL: str = "gemini-2.0-flash-lite"
 GEMINI_MAX_BOOKS_PER_RUN: int = 50
