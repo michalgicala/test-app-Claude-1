@@ -88,8 +88,9 @@ TARGET_PUBLISHER_NAMES: list[str] = [
     "sqn",
 ]
 
-# Max catalog pages to fetch per month (safety cap — each page ≈ 20 books)
-MAX_CATALOG_PAGES: int = 40
+# Max catalog pages to fetch per month (safety cap — each page ≈ 20 books).
+# With publisher pre-filtering the filtered set is small; 10 pages is ample.
+MAX_CATALOG_PAGES: int = 10
 
 
 @dataclass
