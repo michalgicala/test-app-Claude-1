@@ -439,33 +439,31 @@ def _scrape_pass_rating(
             break
 
         page_passed = 0
-        page_below = 0
+        page_fetched = 0  # individual pages actually fetched (not seen_ids / pre-filtered)
 
         for stub in stubs:
             book_id = extract_book_id(stub["url"])
             if not book_id or book_id in seen_ids:
-                continue
+                continue  # already captured by date pass — skip silently
 
             r, rc = stub.get("rating"), stub.get("ratings_count")
             if r is not None and rc is not None:
                 if r < min_rating or rc < min_ratings_count:
-                    page_below += 1
-                    continue
+                    continue  # pre-filtered by listing-page rating — no HTTP needed
 
             book_html = _fetch(session, stub["url"])
             if not book_html:
-                page_below += 1
                 _sleep()
                 continue
             _sleep()
+            page_fetched += 1
 
             soup = BeautifulSoup(book_html, "lxml")
             pub_date = _parse_published_date(soup)
 
-            # Date filter (but NOT early-exit — ratings sort has no date monotonicity)
+            # Date filter (no early-exit — rating sort has no date monotonicity)
             if cutoff_date and pub_date is not None and pub_date < cutoff_date:
                 logger.debug("[%s] Too old (%s): %s", label, pub_date, stub["title"])
-                page_below += 1
                 continue
 
             book = _parse_book_page(soup, stub, category_slug, category_label,
@@ -478,14 +476,19 @@ def _scrape_pass_rating(
                 logger.info("[%s] PASS: %s | %.1f/10 (%d) | pub: %s",
                             label, book.title, book.rating, book.ratings_count,
                             book.published_date or "?")
-            else:
-                page_below += 1
 
-        logger.info("[%s] page %d — %d passed, %d below threshold", label, page, page_passed, page_below)
+        logger.info("[%s] page %d — %d passed, %d fetched", label, page, page_passed, page_fetched)
 
-        # Early exit: full page below threshold → no point going deeper (sorted by rating)
-        if page_below == len(stubs) and page_passed == 0:
-            logger.info("[%s] Full page below threshold — stopping.", label)
+        # Stop when we fetched individual pages but none qualified.
+        # (seen_ids books are silently skipped and don't count here.)
+        if page_fetched > 0 and page_passed == 0:
+            logger.info("[%s] Fetched %d pages, 0 qualified — stopping.", label, page_fetched)
+            break
+
+        # Also stop if the entire page was pre-filtered away without any HTTP calls
+        # (all stubs below rating threshold) — same as before.
+        if page_fetched == 0 and not books:
+            logger.info("[%s] Nothing to fetch on page %d — stopping.", label, page)
             break
 
     return books
