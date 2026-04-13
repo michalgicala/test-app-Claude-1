@@ -1,0 +1,64 @@
+name: Premieres Newsletter
+
+on:
+  schedule:
+    # Runs at 07:00 UTC on the 1st of every month
+    - cron: '0 7 1 * *'
+  # Manual trigger with optional parameters
+  workflow_dispatch:
+    inputs:
+      year:
+        description: 'Year (leave empty for current year)'
+        required: false
+        type: string
+      month:
+        description: 'Month 1–12 (leave empty for current month)'
+        required: false
+        type: string
+      backfill:
+        description: 'Backfill Jan–Apr 2026 in one run'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  premieres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180   # catalog scraping per month ≈ 30–45 min; backfill = 4×
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run premieres scraper
+        env:
+          GOOGLE_SHEETS_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.backfill }}" = "true" ]; then
+            python -m book_discovery.premieres_main --backfill
+          elif [ -n "${{ github.event.inputs.year }}" ] && [ -n "${{ github.event.inputs.month }}" ]; then
+            python -m book_discovery.premieres_main \
+              --year  "${{ github.event.inputs.year }}" \
+              --month "${{ github.event.inputs.month }}"
+          else
+            python -m book_discovery.premieres_main
+          fi
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: premieres-log-${{ github.run_number }}
+          path: premieres_run.log
+          retention-days: 30

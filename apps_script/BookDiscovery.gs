@@ -35,6 +35,8 @@ var COL = {
   EMAILED_DATE:   13,
   EMPIK_URL:      14,
   ALREADY_READ:   15,
+  // index 16 = notes (user-editable, not read by script)
+  PUBLISHER:      17,
 };
 
 // ── Main entry point (called by trigger) ──────────────────────────────────────
@@ -100,6 +102,7 @@ function getUnemailedBooks_(sheet) {
         description:   String(row[COL.DESCRIPTION] || ''),
         descriptionAi: String(row[COL.DESCRIPTION_AI] || ''),
         empikUrl:      String(row[COL.EMPIK_URL] || ''),
+        publisher:     String(row[COL.PUBLISHER] || ''),
       });
     }
     return acc;
@@ -186,7 +189,7 @@ function groupByCategory_(books) {
 
 function buildSubject_(books) {
   var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'd MMM yyyy');
-  return 'Nowe ksiazki non-fiction [' + today + '] — ' + books.length + ' nowych pozycji';
+  return 'Nowe książki non-fiction [' + today + '] — ' + books.length + ' nowych pozycji';
 }
 
 function nextRunDate_() {
@@ -204,6 +207,12 @@ function esc_(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function pickDesc_(book) {
+  var ai = book.descriptionAi || '';
+  var raw = book.description || '';
+  return (ai.length > 20) ? ai : raw;
 }
 
 // ── Minimalist HTML email ─────────────────────────────────────────────────────
@@ -226,13 +235,15 @@ function buildHtmlEmail_(books, totalInDb, sheetId) {
     '.book-title a{color:#1a1a1a;text-decoration:none}',
     '.book-title a:hover{text-decoration:underline}',
     '.author{font-size:12px;color:#666;margin:0 0 4px}',
-    '.rating{font-size:12px;color:#666;margin:0 0 8px}',
-    '.hook{font-size:13px;color:#333;margin:0 0 8px;line-height:1.55}',
-    '.links{font-size:12px;margin:0 0 4px}',
+    '.rating{font-size:12px;color:#666;margin:0 0 6px}',
+    '.links{font-size:12px;margin:4px 0}',
     '.links a{color:#1a1a1a;margin-right:12px}',
-    '.book-item{padding:14px 0;border-bottom:1px solid #f0f0f0}',
+    '.book-item{padding:16px 0;border-bottom:1px solid #f0f0f0}',
     '.book-item:last-child{border-bottom:none}',
-    '.cat-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#888;margin:20px 0 4px}',
+    '.cat-label{font-size:18px;font-weight:700;color:#1a3a5c;border-bottom:2px solid #1a3a5c;padding-bottom:8px;margin:36px 0 14px}',
+    '.book-desc{font-size:13px;color:#444;margin:6px 0 4px;line-height:1.6}',
+    'details summary{cursor:pointer;font-size:12px;color:#555;font-weight:600;margin:4px 0;list-style:none;display:inline-block}',
+    'details summary::-webkit-details-marker{display:none}',
     '.footer{font-size:11px;color:#aaa;margin-top:32px;line-height:1.8}',
     '.footer a{color:#888}',
   ].join('');
@@ -249,11 +260,13 @@ function buildHtmlEmail_(books, totalInDb, sheetId) {
 
   // Book of the Fortnight
   if (fortnight) {
+    var fnDesc = pickDesc_(fortnight);
     html += '<div class="label">Książka dwutygodnia</div>' +
       '<div class="featured">' +
       '<div class="book-title"><a href="' + esc_(fortnight.url) + '">' + esc_(fortnight.title) + '</a></div>' +
       '<div class="author">' + esc_(fortnight.author) + '</div>' +
       '<div class="rating">' + fortnight.rating.toFixed(1) + '/10 &nbsp;(' + fortnight.ratingsCount + ' ocen)</div>' +
+      (fnDesc ? '<details><summary>Opis ▾</summary><div class="book-desc">' + esc_(fnDesc) + '</div></details>' : '') +
       '<div class="links"><a href="' + esc_(fortnight.url) + '">lubimyczytac.pl</a>' +
       (fortnight.empikUrl ? '<a href="' + esc_(fortnight.empikUrl) + '">Empik</a>' : '') +
       '</div></div>';
@@ -265,10 +278,12 @@ function buildHtmlEmail_(books, totalInDb, sheetId) {
     html += '<div class="cat-label">' + esc_(group.category) + ' (' + group.books.length + ')</div>';
     group.books.forEach(function(book) {
       if (fortnight && book.book_id === fortnight.book_id) return;
+      var desc = pickDesc_(book);
       html += '<div class="book-item">' +
         '<div class="book-title"><a href="' + esc_(book.url) + '">' + esc_(book.title) + '</a></div>' +
         '<div class="author">' + esc_(book.author) + '</div>' +
         '<div class="rating">' + book.rating.toFixed(1) + '/10 &nbsp;(' + book.ratingsCount + ' ocen)</div>' +
+        (desc ? '<details><summary>Opis ▾</summary><div class="book-desc">' + esc_(desc) + '</div></details>' : '') +
         '<div class="links"><a href="' + esc_(book.url) + '">lubimyczytac.pl</a>' +
         (book.empikUrl ? '<a href="' + esc_(book.empikUrl) + '">Empik</a>' : '') +
         '</div></div>';
@@ -294,17 +309,19 @@ function buildPlainEmail_(books, totalInDb, sheetId) {
   var today     = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'd MMM yyyy');
   var lines     = [];
 
-  lines.push('Nowe ksiazki non-fiction | ' + today);
-  lines.push(books.length + ' nowych | ' + totalInDb + ' lacznie w bazie');
+  lines.push('Nowe książki non-fiction | ' + today);
+  lines.push(books.length + ' nowych | ' + totalInDb + ' łącznie w bazie');
   lines.push('');
 
   if (fortnight) {
-    lines.push('KSIAZKA DWUTYGODNIA');
+    lines.push('KSIĄŻKA DWUTYGODNIA');
     lines.push('---');
     lines.push(fortnight.title + ' — ' + fortnight.author);
     lines.push('Ocena: ' + fortnight.rating.toFixed(1) + '/10 (' + fortnight.ratingsCount + ' ocen)');
     lines.push(fortnight.url);
     if (fortnight.empikUrl) lines.push('Empik: ' + fortnight.empikUrl);
+    var fnDesc = pickDesc_(fortnight);
+    if (fnDesc) lines.push('Opis: ' + fnDesc);
     lines.push('');
   }
 
@@ -318,6 +335,8 @@ function buildPlainEmail_(books, totalInDb, sheetId) {
       lines.push('   ' + book.rating.toFixed(1) + '/10 (' + book.ratingsCount + ' ocen)');
       lines.push('   ' + book.url);
       if (book.empikUrl) lines.push('   Empik: ' + book.empikUrl);
+      var desc = pickDesc_(book);
+      if (desc) lines.push('   Opis: ' + desc);
       lines.push('');
       idx++;
     });
@@ -325,8 +344,8 @@ function buildPlainEmail_(books, totalInDb, sheetId) {
 
   lines.push('---');
   lines.push('Baza: https://docs.google.com/spreadsheets/d/' + sheetId);
-  lines.push('Nastepne skanowanie: ok. ' + nextRunDate_());
-  lines.push('Przeczytana ksiazka? Wpisz TRUE w kolumnie already_read w arkuszu.');
+  lines.push('Następne skanowanie: ok. ' + nextRunDate_());
+  lines.push('Przeczytana książka? Wpisz TRUE w kolumnie already_read w arkuszu.');
 
   return lines.join('\n');
 }
@@ -347,5 +366,5 @@ function setupTrigger() {
     .everyDays(1)
     .atHour(10)
     .create();
-  Logger.log('Trigger ustawiony: sendNewBooksDigest bedzie uruchamiana codziennie o ~10:00.');
+  Logger.log('Trigger ustawiony: sendNewBooksDigest będzie uruchamiana codziennie o ~10:00.');
 }

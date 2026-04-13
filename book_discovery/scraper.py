@@ -291,6 +291,17 @@ def _parse_book_page(
     tag_els = soup.select("a[href*='/ksiazki/t/']")
     tags = list(dict.fromkeys(el.get_text(strip=True) for el in tag_els))[:10]
 
+    # Extract publisher from dt/dd pairs
+    publisher: Optional[str] = None
+    for dt in soup.find_all("dt"):
+        label = dt.get_text(strip=True).lower()
+        if "wydawca" in label or "wydawnictwo" in label:
+            dd = dt.find_next_sibling("dd")
+            if dd:
+                pub_link = dd.find("a")
+                publisher = (pub_link or dd).get_text(strip=True) or None
+            break
+
     return Book(
         book_id=book_id,
         title=stub["title"],
@@ -308,6 +319,7 @@ def _parse_book_page(
             "https://www.empik.com/szukaj/produkt?q="
             + urllib.parse.quote(stub["title"])
         ),
+        publisher=publisher,
     )
 
 
