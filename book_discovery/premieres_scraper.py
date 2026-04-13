@@ -29,7 +29,7 @@ from typing import Optional
 from bs4 import BeautifulSoup
 
 from .models import PremiereBook
-from .config import BASE_URL, MAX_CATALOG_PAGES
+from .config import BASE_URL
 from .scraper import (
     _make_session,
     _fetch,
