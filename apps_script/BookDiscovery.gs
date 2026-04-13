@@ -63,8 +63,6 @@ function sendNewBooksDigest() {
     return;
   }
 
-  newBooks = enrichWithGemini_(newBooks, geminiKey);
-
   var totalInDb = Math.max(0, sheet.getLastRow() - 1);
   var subject   = buildSubject_(newBooks);
   var htmlBody  = buildHtmlEmail_(newBooks, totalInDb, sheetId);
@@ -256,9 +254,6 @@ function buildHtmlEmail_(books, totalInDb, sheetId) {
       '<div class="book-title"><a href="' + esc_(fortnight.url) + '">' + esc_(fortnight.title) + '</a></div>' +
       '<div class="author">' + esc_(fortnight.author) + '</div>' +
       '<div class="rating">' + fortnight.rating.toFixed(1) + '/10 &nbsp;(' + fortnight.ratingsCount + ' ocen)</div>' +
-      (fortnight.descriptionAi || fortnight.description
-        ? '<div class="hook">' + esc_(fortnight.descriptionAi || fortnight.description) + '</div>'
-        : '') +
       '<div class="links"><a href="' + esc_(fortnight.url) + '">lubimyczytac.pl</a>' +
       (fortnight.empikUrl ? '<a href="' + esc_(fortnight.empikUrl) + '">Empik</a>' : '') +
       '</div></div>';
@@ -274,9 +269,6 @@ function buildHtmlEmail_(books, totalInDb, sheetId) {
         '<div class="book-title"><a href="' + esc_(book.url) + '">' + esc_(book.title) + '</a></div>' +
         '<div class="author">' + esc_(book.author) + '</div>' +
         '<div class="rating">' + book.rating.toFixed(1) + '/10 &nbsp;(' + book.ratingsCount + ' ocen)</div>' +
-        (book.descriptionAi || book.description
-          ? '<div class="hook">' + esc_(book.descriptionAi || book.description) + '</div>'
-          : '') +
         '<div class="links"><a href="' + esc_(book.url) + '">lubimyczytac.pl</a>' +
         (book.empikUrl ? '<a href="' + esc_(book.empikUrl) + '">Empik</a>' : '') +
         '</div></div>';
@@ -313,10 +305,6 @@ function buildPlainEmail_(books, totalInDb, sheetId) {
     lines.push('Ocena: ' + fortnight.rating.toFixed(1) + '/10 (' + fortnight.ratingsCount + ' ocen)');
     lines.push(fortnight.url);
     if (fortnight.empikUrl) lines.push('Empik: ' + fortnight.empikUrl);
-    if (fortnight.descriptionAi || fortnight.description) {
-      lines.push('');
-      lines.push(fortnight.descriptionAi || fortnight.description);
-    }
     lines.push('');
   }
 
@@ -330,7 +318,6 @@ function buildPlainEmail_(books, totalInDb, sheetId) {
       lines.push('   ' + book.rating.toFixed(1) + '/10 (' + book.ratingsCount + ' ocen)');
       lines.push('   ' + book.url);
       if (book.empikUrl) lines.push('   Empik: ' + book.empikUrl);
-      if (book.descriptionAi || book.description) lines.push('   ' + (book.descriptionAi || book.description));
       lines.push('');
       idx++;
     });

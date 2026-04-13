@@ -6,12 +6,13 @@ from dataclasses import dataclass, field
 BASE_URL = "https://lubimyczytac.pl"
 
 # (category_id, url_slug, human_label)
+# IDs verified against lubimyczytac.pl /ksiazki/k/{id}/{slug}
 CATEGORIES = [
-    (46,  "literatura-faktu",           "Literatura faktu / Reportaż"),
-    (5,   "biografie-i-autobiografie",  "Biografie i Autobiografie"),
-    (10,  "historia",                   "Historia"),
-    (84,  "psychologia",                "Psychologia"),
-    (31,  "literatura-popularnonaukowa","Literatura popularnonaukowa"),
+    (46,  "literatura-faktu",                          "Literatura faktu / Reportaż"),
+    (40,  "biografia-autobiografia-pamietnik",         "Biografie i Autobiografie"),
+    (64,  "historia",                                  "Historia"),
+    (67,  "nauki-spoleczne-psychologia-socjologia-itd","Psychologia i Nauki społeczne"),
+    (107, "literatura-popularnonaukowa",               "Literatura popularnonaukowa"),
 ]
 
 # Scraping thresholds
