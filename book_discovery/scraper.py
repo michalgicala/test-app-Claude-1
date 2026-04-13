@@ -3,12 +3,16 @@ Scraper for lubimyczytac.pl
 
 Uses curl_cffi to impersonate Chrome's TLS fingerprint (plain requests returns 403).
 
-Pagination strategy:
-- Pages are sorted by publication date descending (newest first).
-- As soon as ANY book's publication date falls before the cutoff, we stop — no
-  point checking further pages because all subsequent books will be even older.
-- Individual book pages are fetched only for books that pass the rating pre-filter
-  from the listing page.
+Two-pass strategy per category:
+  Pass 1 — sorted by publishDate desc (newest first)
+    Stop as soon as any book's pub_date < cutoff_date.
+    Catches brand-new books that may not yet have many ratings.
+
+  Pass 2 — sorted by ratings desc (most popular first)
+    Stop when listing-page rating drops below threshold.
+    Catches popular recent books that accumulate high ratings quickly.
+
+Results from both passes are merged and deduplicated by book_id.
 """
 
 import logging
@@ -53,8 +57,7 @@ def _make_session() -> cffi_requests.Session:
 
 
 def _sleep():
-    delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
-    time.sleep(delay)
+    time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
 
 
 def _fetch(session: cffi_requests.Session, url: str) -> Optional[str]:
@@ -70,26 +73,23 @@ def _fetch(session: cffi_requests.Session, url: str) -> Optional[str]:
 
 
 def extract_book_id(url: str) -> Optional[str]:
-    """Extract numeric book ID from lubimyczytac.pl URL.
-
-    /ksiazka/4879823/sapiens  →  '4879823'
-    """
+    """/ksiazka/4879823/sapiens → '4879823'"""
     m = re.search(r"/ksiazka/(\d+)/", url) or re.search(r"/ksiazka/(\d+)$", url)
     return m.group(1) if m else None
 
 
-def _build_listing_url(category_id: int, category_slug: str, page: int) -> str:
-    """Category listing URL sorted by publication date descending (newest first).
+def _build_url(category_id: int, category_slug: str, page: int, order: str) -> str:
+    """Build a category listing URL.
 
-    lang[] is kept as literal brackets — urllib would encode them to %5B%5D
-    which some servers ignore.
+    lang[] kept as literal brackets — urllib would encode them to %5B%5D.
+    order: 'publishDate' | 'ratings'
     """
     base = f"{BASE_URL}/ksiazki/k/{category_id}/{category_slug}"
     qs = (
         f"listId=booksFilteredList"
         f"&listType=list"
-        f"&orderBy=publishDate"   # Sort by publication date
-        f"&desc=1"                # Newest first
+        f"&orderBy={order}"
+        f"&desc=1"
         f"&lang[]=pol"
         f"&page={page}"
         f"&paginatorType=url"
@@ -97,28 +97,19 @@ def _build_listing_url(category_id: int, category_slug: str, page: int) -> str:
     return f"{base}?{qs}"
 
 
-def _build_listing_url_simple(category_id: int, category_slug: str, page: int) -> str:
-    """Fallback URL without AJAX params, for categories that don't respond to the
-    AJAX endpoint."""
+def _build_url_simple(category_id: int, category_slug: str, page: int, order: str) -> str:
+    """Fallback URL without AJAX params."""
     base = f"{BASE_URL}/ksiazki/k/{category_id}/{category_slug}"
-    qs = f"orderBy=publishDate&desc=1&lang[]=pol&page={page}"
-    return f"{base}?{qs}"
+    return f"{base}?orderBy={order}&desc=1&lang[]=pol&page={page}"
 
 
 def _parse_rating_count(text: str) -> Optional[int]:
-    """Parse '1 234 ocen' or '(342)' → int."""
-    if not text:
-        return None
     digits = re.sub(r"[^\d]", "", text.replace("\u00a0", ""))
     return int(digits) if digits else None
 
 
 def _parse_listing_page(html: str) -> list[dict]:
-    """Parse a category listing page.
-
-    Returns list of dicts: title, author, url, rating, ratings_count, pub_year.
-    pub_year is extracted when the listing card shows it; otherwise None.
-    """
+    """Return stubs: title, author, url, rating, ratings_count, pub_year."""
     soup = BeautifulSoup(html, "lxml")
 
     cards = (
@@ -131,12 +122,10 @@ def _parse_listing_page(html: str) -> list[dict]:
 
     if not cards:
         body = soup.find("body")
-        snippet = (body.get_text(separator=" ", strip=True)[:300] if body
-                   else html[200:600])
-        logger.warning("No book cards found on listing page. Snippet: ...%s...", snippet)
-        all_divs = soup.find_all("div", class_=True, limit=20)
+        snippet = body.get_text(separator=" ", strip=True)[:300] if body else html[200:600]
+        logger.warning("No book cards found. HTML snippet: ...%s...", snippet)
         logger.debug("First 20 div classes: %s",
-                     [" ".join(d.get("class", [])) for d in all_divs])
+                     [" ".join(d.get("class", [])) for d in soup.find_all("div", class_=True, limit=20)])
         return []
 
     books = []
@@ -159,7 +148,6 @@ def _parse_listing_page(html: str) -> list[dict]:
         )
         author = author_el.get_text(strip=True) if author_el else "Nieznany autor"
 
-        # Rating (may not always be present when sorting by date)
         rating: Optional[float] = None
         rating_el = card.select_one(".listLibrary__ratingStarsNumber")
         if rating_el:
@@ -173,7 +161,6 @@ def _parse_listing_page(html: str) -> list[dict]:
         if count_el:
             ratings_count = _parse_rating_count(count_el.get_text(strip=True))
 
-        # Publication year from listing card (used for cheap early-exit check)
         pub_year: Optional[int] = None
         year_el = (
             card.select_one(".listLibrary__year")
@@ -194,20 +181,12 @@ def _parse_listing_page(html: str) -> list[dict]:
             "pub_year": pub_year,
         })
 
-    logger.debug("Parsed %d book stubs from listing page", len(books))
+    logger.debug("Parsed %d stubs", len(books))
     return books
 
 
 def _parse_published_date(soup: BeautifulSoup) -> Optional[date]:
-    """Extract publication date from a book page.
-
-    Tries (in order):
-    1. OG meta  books:release_date  (ISO format)
-    2. dt/dd    Data wydania        (DD.MM.YYYY)
-    3. dt/dd    Rok wydania         (YYYY → Jan 1 of that year)
-    4. itemprop datePublished
-    """
-    # 1. Open Graph
+    """Extract publication date from a book page (OG meta → dt/dd → itemprop)."""
     og = soup.find("meta", {"property": "books:release_date"})
     if og and og.get("content"):
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y"):
@@ -216,7 +195,6 @@ def _parse_published_date(soup: BeautifulSoup) -> Optional[date]:
             except ValueError:
                 continue
 
-    # 2 & 3. dt/dd pairs
     for dt in soup.find_all("dt"):
         label = dt.get_text(strip=True).lower()
         dd = dt.find_next_sibling("dd")
@@ -246,7 +224,6 @@ def _parse_published_date(soup: BeautifulSoup) -> Optional[date]:
                 except ValueError:
                     pass
 
-    # 4. itemprop
     el = soup.find(attrs={"itemprop": "datePublished"})
     if el:
         content = el.get("content") or el.get_text(strip=True)
@@ -268,13 +245,7 @@ def _parse_book_page(
     min_rating: float,
     min_ratings_count: int,
 ) -> Optional[Book]:
-    """Build a Book from an already-parsed individual book page.
-
-    Does NOT apply the date filter — caller handles that so it can also
-    use the date for the early-exit decision.
-    Returns None if rating data is missing or below threshold.
-    """
-    # Rating: prefer listing-page value, fall back to OG meta
+    """Build a Book from a parsed individual page. Returns None if below threshold."""
     rating = stub.get("rating")
     ratings_count = stub.get("ratings_count")
 
@@ -297,9 +268,8 @@ def _parse_book_page(
     if rating is None or ratings_count is None:
         logger.debug("No rating data for %s", stub["url"])
         return None
-
     if rating < min_rating or ratings_count < min_ratings_count:
-        logger.debug("Below threshold: %s | %.1f/10 (%d)", stub["title"], rating, ratings_count)
+        logger.debug("Below threshold: %s | %.1f (%d)", stub["title"], rating, ratings_count)
         return None
 
     book_id = extract_book_id(stub["url"])
@@ -307,11 +277,7 @@ def _parse_book_page(
         return None
 
     cover_el = soup.find("meta", {"property": "og:image"})
-    cover_url = cover_el["content"] if cover_el else None
-
     isbn_el = soup.find("meta", {"property": "books:isbn"})
-    isbn = isbn_el["content"] if isbn_el else None
-
     desc_el = (
         soup.select_one("div.collapse-content")
         or soup.select_one("div#book-description")
@@ -325,11 +291,6 @@ def _parse_book_page(
     tag_els = soup.select("a[href*='/ksiazki/t/']")
     tags = list(dict.fromkeys(el.get_text(strip=True) for el in tag_els))[:10]
 
-    empik_url = (
-        "https://www.empik.com/szukaj/produkt?q="
-        + urllib.parse.quote(stub["title"])
-    )
-
     return Book(
         book_id=book_id,
         title=stub["title"],
@@ -339,13 +300,198 @@ def _parse_book_page(
         rating=rating,
         ratings_count=ratings_count,
         url=stub["url"],
-        isbn=isbn,
-        cover_url=cover_url,
+        isbn=isbn_el["content"] if isbn_el else None,
+        cover_url=cover_el["content"] if cover_el else None,
         description=description,
         tags=tags,
-        empik_url=empik_url,
+        empik_url=(
+            "https://www.empik.com/szukaj/produkt?q="
+            + urllib.parse.quote(stub["title"])
+        ),
     )
 
+
+# ── Single-pass helpers ────────────────────────────────────────────────────────
+
+def _scrape_pass_date(
+    session: cffi_requests.Session,
+    category_id: int,
+    category_slug: str,
+    category_label: str,
+    min_rating: float,
+    min_ratings_count: int,
+    cutoff_date: date,
+    seen_ids: set,
+) -> list[Book]:
+    """Pass 1: sort by publishDate desc. Stop at first book older than cutoff."""
+    books: list[Book] = []
+    label = f"{category_label}[date]"
+
+    for page in range(1, MAX_PAGES_PER_CATEGORY + 1):
+        url = _build_url(category_id, category_slug, page, "publishDate")
+        logger.info("[%s] page %d → %s", label, page, url)
+
+        html = _fetch(session, url)
+        if not html:
+            break
+        _sleep()
+
+        stubs = _parse_listing_page(html)
+        if not stubs and page == 1:
+            # Try fallback URL once
+            fb = _build_url_simple(category_id, category_slug, page, "publishDate")
+            logger.info("[%s] fallback URL: %s", label, fb)
+            html2 = _fetch(session, fb)
+            if html2:
+                stubs = _parse_listing_page(html2)
+                _sleep()
+
+        if not stubs:
+            break
+
+        reached_cutoff = False
+
+        for stub in stubs:
+            # Cheap year check from listing card
+            pub_year = stub.get("pub_year")
+            if pub_year is not None and date(pub_year, 12, 31) < cutoff_date:
+                logger.info("[%s] year %d before cutoff — stopping.", label, pub_year)
+                reached_cutoff = True
+                break
+
+            book_id = extract_book_id(stub["url"])
+            if not book_id or book_id in seen_ids:
+                continue
+
+            # Rating pre-filter (skip HTTP request if clearly below)
+            r, rc = stub.get("rating"), stub.get("ratings_count")
+            if r is not None and rc is not None:
+                if r < min_rating or rc < min_ratings_count:
+                    continue
+
+            book_html = _fetch(session, stub["url"])
+            if not book_html:
+                _sleep()
+                continue
+            _sleep()
+
+            soup = BeautifulSoup(book_html, "lxml")
+            pub_date = _parse_published_date(soup)
+
+            if pub_date is not None and pub_date < cutoff_date:
+                logger.info("[%s] %s pub=%s < cutoff — stopping.",
+                            label, stub["title"], pub_date)
+                reached_cutoff = True
+                break
+
+            book = _parse_book_page(soup, stub, category_slug, category_label,
+                                    min_rating, min_ratings_count)
+            if book:
+                book.published_date = pub_date.isoformat() if pub_date else None
+                books.append(book)
+                seen_ids.add(book_id)
+                logger.info("[%s] PASS: %s | %.1f/10 (%d) | pub: %s",
+                            label, book.title, book.rating, book.ratings_count,
+                            book.published_date or "?")
+
+        logger.info("[%s] page %d done — %d total so far", label, page, len(books))
+
+        if reached_cutoff:
+            logger.info("[%s] Cutoff reached — stopping pagination.", label)
+            break
+
+    return books
+
+
+def _scrape_pass_rating(
+    session: cffi_requests.Session,
+    category_id: int,
+    category_slug: str,
+    category_label: str,
+    min_rating: float,
+    min_ratings_count: int,
+    cutoff_date: Optional[date],
+    seen_ids: set,
+) -> list[Book]:
+    """Pass 2: sort by ratings desc. Stop when listing-page rating drops below threshold."""
+    books: list[Book] = []
+    label = f"{category_label}[rating]"
+
+    for page in range(1, MAX_PAGES_PER_CATEGORY + 1):
+        url = _build_url(category_id, category_slug, page, "ratings")
+        logger.info("[%s] page %d → %s", label, page, url)
+
+        html = _fetch(session, url)
+        if not html:
+            break
+        _sleep()
+
+        stubs = _parse_listing_page(html)
+        if not stubs and page == 1:
+            fb = _build_url_simple(category_id, category_slug, page, "ratings")
+            logger.info("[%s] fallback URL: %s", label, fb)
+            html2 = _fetch(session, fb)
+            if html2:
+                stubs = _parse_listing_page(html2)
+                _sleep()
+
+        if not stubs:
+            break
+
+        page_passed = 0
+        page_below = 0
+
+        for stub in stubs:
+            book_id = extract_book_id(stub["url"])
+            if not book_id or book_id in seen_ids:
+                continue
+
+            r, rc = stub.get("rating"), stub.get("ratings_count")
+            if r is not None and rc is not None:
+                if r < min_rating or rc < min_ratings_count:
+                    page_below += 1
+                    continue
+
+            book_html = _fetch(session, stub["url"])
+            if not book_html:
+                page_below += 1
+                _sleep()
+                continue
+            _sleep()
+
+            soup = BeautifulSoup(book_html, "lxml")
+            pub_date = _parse_published_date(soup)
+
+            # Date filter (but NOT early-exit — ratings sort has no date monotonicity)
+            if cutoff_date and pub_date is not None and pub_date < cutoff_date:
+                logger.debug("[%s] Too old (%s): %s", label, pub_date, stub["title"])
+                page_below += 1
+                continue
+
+            book = _parse_book_page(soup, stub, category_slug, category_label,
+                                    min_rating, min_ratings_count)
+            if book:
+                book.published_date = pub_date.isoformat() if pub_date else None
+                books.append(book)
+                seen_ids.add(book_id)
+                page_passed += 1
+                logger.info("[%s] PASS: %s | %.1f/10 (%d) | pub: %s",
+                            label, book.title, book.rating, book.ratings_count,
+                            book.published_date or "?")
+            else:
+                page_below += 1
+
+        logger.info("[%s] page %d — %d passed, %d below threshold", label, page, page_passed, page_below)
+
+        # Early exit: full page below threshold → no point going deeper (sorted by rating)
+        if page_below == len(stubs) and page_passed == 0:
+            logger.info("[%s] Full page below threshold — stopping.", label)
+            break
+
+    return books
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
 
 def scrape_category(
     category_id: int,
@@ -355,121 +501,30 @@ def scrape_category(
     min_ratings_count: int = MIN_RATINGS_COUNT,
     cutoff_date: Optional[date] = None,
 ) -> list[Book]:
-    """Scrape one category, stopping as soon as any book predates the cutoff.
-
-    Pages are sorted by publication date descending, so the first book whose
-    pub_date < cutoff_date means all remaining books (this page and beyond)
-    are also before the cutoff.
-    """
+    """Run both passes (date + rating) and return deduplicated results."""
     session = _make_session()
-    all_books: list[Book] = []
     seen_ids: set[str] = set()
 
-    logger.info("Scraping category: %s (id=%d)", category_label, category_id)
+    logger.info("=== Scraping: %s (id=%d) ===", category_label, category_id)
 
-    for page in range(1, MAX_PAGES_PER_CATEGORY + 1):
-        url = _build_listing_url(category_id, category_slug, page)
-        logger.info("Fetching listing page %d: %s", page, url)
-
-        html = _fetch(session, url)
-        if not html:
-            logger.warning("Empty response on page %d — stopping.", page)
-            break
-        _sleep()
-
-        stubs = _parse_listing_page(html)
-
-        # If AJAX URL returned no cards, try the simpler fallback once
-        if not stubs and page == 1:
-            fallback_url = _build_listing_url_simple(category_id, category_slug, page)
-            logger.info("Trying fallback URL: %s", fallback_url)
-            html2 = _fetch(session, fallback_url)
-            if html2:
-                stubs = _parse_listing_page(html2)
-                _sleep()
-
-        if not stubs:
-            logger.info("No book stubs on page %d — end of category.", page)
-            break
-
-        page_passed = 0
-        page_skipped_rating = 0
-        reached_cutoff = False  # set True → break both loops
-
-        for stub in stubs:
-            # ── Cheap date check from listing card (no HTTP request needed) ──
-            pub_year = stub.get("pub_year")
-            if cutoff_date and pub_year is not None:
-                # If the book's latest possible date (Dec 31) is still before
-                # the cutoff, we can stop without visiting the individual page.
-                if date(pub_year, 12, 31) < cutoff_date:
-                    logger.info(
-                        "Listing-page year %d is before cutoff %s — stopping.",
-                        pub_year, cutoff_date,
-                    )
-                    reached_cutoff = True
-                    break
-
-            book_id = extract_book_id(stub["url"])
-            if not book_id or book_id in seen_ids:
-                continue
-            seen_ids.add(book_id)
-
-            # ── Rating pre-filter (skip individual page visit if clearly below) ──
-            listing_rating = stub.get("rating")
-            listing_count = stub.get("ratings_count")
-            if listing_rating is not None and listing_count is not None:
-                if listing_rating < min_rating or listing_count < min_ratings_count:
-                    page_skipped_rating += 1
-                    continue
-
-            # ── Fetch individual book page ──
-            book_html = _fetch(session, stub["url"])
-            if not book_html:
-                page_skipped_rating += 1
-                _sleep()
-                continue
-            _sleep()
-
-            soup = BeautifulSoup(book_html, "lxml")
-
-            # ── Exact date check (most reliable) ──
-            pub_date = _parse_published_date(soup)
-            if cutoff_date and pub_date is not None and pub_date < cutoff_date:
-                logger.info(
-                    "Date cutoff reached: %s published %s (cutoff %s) — stopping.",
-                    stub["title"], pub_date, cutoff_date,
-                )
-                reached_cutoff = True
-                break
-
-            # ── Full parse ──
-            book = _parse_book_page(
-                soup, stub, category_slug, category_label,
-                min_rating, min_ratings_count,
-            )
-            if book:
-                book.published_date = pub_date.isoformat() if pub_date else None
-                all_books.append(book)
-                page_passed += 1
-                logger.info(
-                    "  PASS: %s | %.1f/10 (%d ratings)%s",
-                    book.title, book.rating, book.ratings_count,
-                    f" | pub: {book.published_date}" if book.published_date else "",
-                )
-            else:
-                page_skipped_rating += 1
-
-        logger.info(
-            "Page %d: %d passed, %d skipped (rating/data)",
-            page, page_passed, page_skipped_rating,
+    # Pass 1: date-sorted (early exit at cutoff) — only meaningful with a date filter
+    date_books: list[Book] = []
+    if cutoff_date:
+        date_books = _scrape_pass_date(
+            session, category_id, category_slug, category_label,
+            min_rating, min_ratings_count, cutoff_date, seen_ids,
         )
+        logger.info("Date pass: %d books", len(date_books))
 
-        if reached_cutoff:
-            logger.info("Cutoff date reached — stopping pagination for '%s'.", category_label)
-            break
+    # Pass 2: rating-sorted (early exit at rating threshold)
+    rating_books = _scrape_pass_rating(
+        session, category_id, category_slug, category_label,
+        min_rating, min_ratings_count, cutoff_date, seen_ids,
+    )
+    logger.info("Rating pass: %d new books (not seen in date pass)", len(rating_books))
 
-    logger.info("Category '%s' done: %d books found.", category_label, len(all_books))
+    all_books = date_books + rating_books
+    logger.info("Category '%s' total: %d unique books", category_label, len(all_books))
     return all_books
 
 
@@ -484,7 +539,7 @@ def scrape_all_categories(
     seen_ids: set[str] = set()
 
     if cutoff_date:
-        logger.info("Date filter active: books published on or after %s", cutoff_date.isoformat())
+        logger.info("Date filter: on or after %s", cutoff_date.isoformat())
 
     for category_id, category_slug, category_label in categories:
         books = scrape_category(
