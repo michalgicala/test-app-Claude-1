@@ -62,7 +62,7 @@ def _sleep():
 
 def _fetch(session: cffi_requests.Session, url: str) -> Optional[str]:
     try:
-        resp = session.get(url, headers=HEADERS, timeout=30)
+        resp = session.get(url, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
             return resp.text
         logger.warning("HTTP %s for %s", resp.status_code, url)
