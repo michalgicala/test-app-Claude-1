@@ -72,26 +72,6 @@ BACKFILL_MONTHS: list[tuple[int, int]] = [
     (2026, 1), (2026, 2), (2026, 3), (2026, 4),
 ]
 
-# Publishers to include in the premieres newsletter.
-# Case-insensitive partial match against the publisher field on each book page.
-TARGET_PUBLISHER_NAMES: list[str] = [
-    "marginesy",
-    "znak",
-    "czwarta strona",
-    "wydawnictwo poznańskie",
-    "jaguar",
-    "kobiece",
-    "otwarte",
-    "w.a.b",
-    "wab",
-    "filia",
-    "sqn",
-]
-
-# Max catalog pages to fetch per month (safety cap — each page ≈ 20 books).
-# With publisher pre-filtering the filtered set is small; 10 pages is ample.
-MAX_CATALOG_PAGES: int = 10
-
 
 @dataclass
 class Config:
