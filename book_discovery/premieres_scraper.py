@@ -328,11 +328,20 @@ def _scrape_one_publisher(
                     stop_publisher = True
                     break
 
-            premiere = _parse_premiere_book(soup, stub, premiere_month, display_name)
+            # Verify publisher from detail page — safety net if publisherId[] filter
+            # returned books from other publishers (URL filter is best-effort).
+            raw_pub = _extract_publisher_name(soup)
+            if raw_pub and not _is_target_publisher(raw_pub):
+                logger.debug("  publisher mismatch '%s': %s — skip", raw_pub, stub["title"])
+                continue
+            # Use canonical display name from registry, falling back to URL-based name.
+            canon_name = _best_display_name(raw_pub) if raw_pub else display_name
+
+            premiere = _parse_premiere_book(soup, stub, premiere_month, canon_name)
             if premiere:
                 books.append(premiere)
                 seen_ids.add(book_id)
-                logger.info("  FOUND: %-45s | %s", premiere.title, display_name)
+                logger.info("  FOUND: %-45s | %s", premiere.title, canon_name)
 
         if stop_publisher:
             break
