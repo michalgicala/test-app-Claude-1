@@ -1,27 +1,38 @@
 """
-Premieres scraper v5 — per-publisher binary search + linear scan.
+Premieres scraper v6 — per-publisher binary search + linear scan.
 
 History:
   v1/v2: Catalog publishedMonth=4 → showed wrong month (0-indexed)
   v3:    Publisher pages /wydawnictwo/{id}/{slug}/ksiazki → ignored all params
-  v4:    All-publisher catalog → wrong IDs (0 results); correct IDs still
-         returned 0 due to unknown catalog filtering behaviour
-  v5:    One publisher at a time + binary search for target-month boundary.
+  v4:    All-publisher catalog → wrong IDs (0 results)
+  v5:    Correct IDs; per-publisher catalog; 3 bugs remained:
+           (a) AJAX params (listId/listType/paginatorType) may cause AJAX fragment
+               response with different HTML structure → stubs=[] → publisher skipped
+           (b) year-only dates: _parse_published_date returns date(year,1,1) for
+               "rok wydania: 2026"; probe gets (2026,1) < (2026,4) target → skip
+           (c) no fallback when publishedYear filter returns 0 results
+  v6:    Fixes all three:
+           (a) removed AJAX params from URL; fallback URL without publishedYear
+           (b) _is_year_only() + probe retries up to 3 books; linear scan treats
+               year-only-same-year as "skip" (not "stop")
+           (c) if year-filtered URL returns 0 stubs, retry without year filter
 
 Algorithm per publisher:
   1. Probe page 1: fetch listing + first book detail page → get exact date.
-  2. date < target → skip publisher (newest book is already older than target).
+     Year-only dates (month=1, day=1) retried on next book; treated as (year,12)
+     if unavoidable (conservative = "could be any month, treat as future").
+  2. date < target (and not year-only from target year) → skip publisher.
      date == target → scan from page 1.
-     date > target → binary search (exponential then bisect) for the page where
-                     the first book transitions to target-or-past month.
-  3. Start linear scan from max(1, transition_page - 1) to avoid missing
-     target-month books near the bottom of the page before the transition.
-  4. In linear scan: skip future books, collect target-month books, stop at past.
+     date > target → binary search for the transition page.
+  3. Scan from max(1, transition_page - 1).
+  4. Linear scan: skip future, collect exact-match, skip year-only-ambiguous,
+     stop at definite past.
 """
 
 import logging
 import re
 import unicodedata
+from datetime import date
 from typing import Optional
 
 from bs4 import BeautifulSoup
@@ -95,22 +106,50 @@ def _best_display_name(raw: str) -> str:
     return raw
 
 
-# ── URL builder ───────────────────────────────────────────────────────────────
+# ── URL builders ──────────────────────────────────────────────────────────────
 
 def _pub_catalog_url(pub_id: int, year: int, page: int) -> str:
-    """Catalog filtered by ONE publisher + year, sorted newest-first."""
+    """
+    Catalog for ONE publisher + year, sorted newest-first.
+    No AJAX params (listId/listType/paginatorType) — those may cause the server
+    to return a partial AJAX fragment with different HTML structure.
+    """
     return (
         f"{BASE_URL}/katalog/ksiazki"
-        f"?listId=catalogFilteredList"
-        f"&listType=list"
-        f"&publisherId[]={pub_id}"
+        f"?publisherId[]={pub_id}"
         f"&publishedYear={year}"
         f"&orderBy=publishDate"
         f"&desc=1"
         f"&lang[]=pol"
         f"&page={page}"
-        f"&paginatorType=url"
     )
+
+
+def _pub_catalog_url_noyear(pub_id: int, page: int) -> str:
+    """
+    Fallback: no publishedYear filter.
+    Used when the year-filtered URL returns 0 stubs (filter may be broken or
+    publisher has no books registered with that year in the database yet).
+    """
+    return (
+        f"{BASE_URL}/katalog/ksiazki"
+        f"?publisherId[]={pub_id}"
+        f"&orderBy=publishDate"
+        f"&desc=1"
+        f"&lang[]=pol"
+        f"&page={page}"
+    )
+
+
+# ── Date helpers ──────────────────────────────────────────────────────────────
+
+def _is_year_only(d: date) -> bool:
+    """
+    Heuristic: date(year, 1, 1) is how _parse_published_date encodes a year-only
+    entry ("rok wydania: 2026").  Genuine January 1 publications are rare enough
+    that we treat month=1 day=1 as "unknown month within that year".
+    """
+    return d.month == 1 and d.day == 1
 
 
 # ── Book detail parsing ───────────────────────────────────────────────────────
@@ -169,62 +208,120 @@ def _parse_premiere_book(
     )
 
 
+# ── Listing page fetcher with year-filter fallback ────────────────────────────
+
+def _fetch_stubs(
+    session, pub_id: int, year: int, page: int
+) -> tuple[list[dict], bool]:
+    """
+    Fetch listing page stubs for a publisher/year/page.
+    Returns (stubs, used_noyear_fallback).
+    Tries year-filtered URL first; falls back to no-year URL if 0 stubs.
+    """
+    html = _fetch(session, _pub_catalog_url(pub_id, year, page))
+    _sleep()
+    if html:
+        stubs = _parse_listing_page(html)
+        if stubs:
+            return stubs, False
+
+    # Fallback: try without year filter
+    logger.debug("  year-filtered URL returned 0 stubs on page %d, trying no-year fallback", page)
+    html2 = _fetch(session, _pub_catalog_url_noyear(pub_id, page))
+    _sleep()
+    if html2:
+        stubs2 = _parse_listing_page(html2)
+        if stubs2:
+            return stubs2, True
+
+    return [], False
+
+
 # ── Binary search helpers ─────────────────────────────────────────────────────
 
 def _probe_first_book_date(
-    session, pub_id: int, year: int, page: int
+    session, pub_id: int, year: int, page: int, *, no_year: bool = False
 ) -> Optional[tuple[int, int]]:
     """
-    Fetch listing page, then first book's detail page.
-    Returns (year, month) of first book, or None if empty / fetch failed.
-    Cost: 2 HTTP requests + 2 sleeps.
+    Fetch listing page, then probe detail pages until we get a reliable date.
+    Returns (year, month) tuple, or None if page is empty / all fetches failed.
+
+    Year-only dates (month=1, day=1) are retried on the next book on the page.
+    If unavoidable (all books on page are year-only), returns (year, 12) as a
+    conservative upper bound — "unknown month, treat as future".
+
+    Cost: 1 listing fetch + up to 3 detail page fetches + sleeps.
     """
-    html = _fetch(session, _pub_catalog_url(pub_id, year, page))
+    url = (_pub_catalog_url_noyear(pub_id, page) if no_year
+           else _pub_catalog_url(pub_id, year, page))
+    html = _fetch(session, url)
     _sleep()
     if not html:
         return None
 
     stubs = _parse_listing_page(html)
     if not stubs:
+        if not no_year:
+            # Retry with no-year fallback
+            return _probe_first_book_date(session, pub_id, year, page, no_year=True)
         return None
 
-    book_html = _fetch(session, stubs[0]["url"])
-    _sleep()
-    if not book_html:
-        return None
+    last_year_only: Optional[int] = None
 
-    soup     = BeautifulSoup(book_html, "lxml")
-    pub_date = _parse_published_date(soup)
-    if not pub_date:
-        return None
+    for stub in stubs[:3]:   # try up to 3 books to avoid year-only traps
+        book_html = _fetch(session, stub["url"])
+        _sleep()
+        if not book_html:
+            continue
 
-    return (pub_date.year, pub_date.month)
+        soup     = BeautifulSoup(book_html, "lxml")
+        pub_date = _parse_published_date(soup)
+        if pub_date is None:
+            continue
+
+        if not _is_year_only(pub_date):
+            return (pub_date.year, pub_date.month)
+
+        # Year-only — remember the year, try next book
+        last_year_only = pub_date.year
+
+    if last_year_only is not None:
+        # All sampled books have year-only dates.
+        # Conservative: treat as end-of-year to avoid false "past" detection.
+        logger.debug("  page %d: all year-only dates, year=%d → treating as (%d,12)",
+                     page, last_year_only, last_year_only)
+        return (last_year_only, 12)
+
+    return None
 
 
 def _find_scan_start_page(
     session, pub_id: int, year: int, target_ym: tuple[int, int]
 ) -> Optional[int]:
     """
-    Find the page to start linear scanning from.
-
-    Returns None  → no target-month books for this publisher/year.
-    Returns page# → start scanning here (may be 1 before the transition to
-                    ensure no target-month books at the bottom of a page are missed).
+    Binary search for the first page where target-month books appear.
+    Returns page number to start linear scan from, or None if none exist.
     """
     # ── Step 1: probe page 1 ───────────────────────────────────────────────────
     d1 = _probe_first_book_date(session, pub_id, year, 1)
+    logger.debug("  probe(1) → %s", d1)
+
     if d1 is None:
-        logger.debug("  probe(1) → empty")
+        logger.info("  probe(1) empty — no books found")
         return None
+
     if d1 < target_ym:
-        logger.debug("  probe(1) → %s — already past, skip", d1)
+        # Could be a genuine past date — skip publisher
+        logger.debug("  probe(1) %s < target — skip", d1)
         return None
+
     if d1 == target_ym:
-        logger.debug("  probe(1) → target month, scan from page 1")
+        logger.debug("  probe(1) == target — scan from page 1")
         return 1
 
+    # d1 > target_ym: future books on page 1, search for transition
+
     # ── Step 2: exponential search for upper bound ─────────────────────────────
-    # page 1 = known future (d1 > target_ym)
     lo = 1
     hi: Optional[int] = None
 
@@ -236,7 +333,7 @@ def _find_scan_start_page(
         logger.debug("  probe(%d) → %s", probe_page, d)
 
         if d is None:
-            # Past end of list — no target-month books this year
+            # Past end of list — no target-month books
             return None
         if d <= target_ym:
             hi = probe_page
@@ -245,29 +342,26 @@ def _find_scan_start_page(
         next_probe = probe_page * 2
         if next_probe > MAX_CATALOG_PAGES:
             if probe_page == MAX_CATALOG_PAGES:
-                # Reached cap and still future
-                return None
+                return None   # still future at cap — give up
             probe_page = MAX_CATALOG_PAGES
         else:
             probe_page = next_probe
 
     if hi is None:
-        return None   # never found a target-or-past page
+        return None
 
-    # ── Step 3: binary search between lo (future) and hi (target-or-past) ──────
+    # ── Step 3: bisect between lo (future) and hi (target-or-past) ────────────
     while lo + 1 < hi:
         mid = (lo + hi) // 2
         d = _probe_first_book_date(session, pub_id, year, mid)
-        logger.debug("  bisect probe(%d) → %s", mid, d)
+        logger.debug("  bisect(%d) → %s", mid, d)
         if d is None or d < target_ym:
-            hi = mid   # overshot or empty, move boundary earlier
+            hi = mid
         elif d == target_ym:
-            hi = mid   # found target, try even earlier
+            hi = mid
         else:
-            lo = mid   # still future
+            lo = mid
 
-    # hi = first page where first book is <= target_ym.
-    # Scan from hi-1 to catch target-month books at the bottom of the previous page.
     start = max(1, hi - 1)
     logger.debug("  transition at page %d → scan from page %d", hi, start)
     return start
@@ -293,14 +387,12 @@ def _scrape_one_publisher(
     logger.info("  scanning from page %d", start_page)
     books:    list[PremiereBook] = []
     seen_ids: set[str]           = set()
+    no_year_fallback = False  # set True if we switched to no-year URLs
 
     for page in range(start_page, MAX_CATALOG_PAGES + 1):
-        html = _fetch(session, _pub_catalog_url(pub_id, year, page))
-        _sleep()
-        if not html:
-            break
-
-        stubs = _parse_listing_page(html)
+        stubs, used_fallback = _fetch_stubs(session, pub_id, year, page)
+        if used_fallback:
+            no_year_fallback = True
         if not stubs:
             break
 
@@ -319,22 +411,39 @@ def _scrape_one_publisher(
             pub_date = _parse_published_date(soup)
 
             if pub_date:
-                book_ym = (pub_date.year, pub_date.month)
-                if book_ym > target_ym:
-                    logger.debug("  future %s: %s — skip", pub_date, stub["title"])
-                    continue
-                if book_ym < target_ym:
-                    logger.info("  past %s: %s — stop", pub_date, stub["title"])
-                    stop_publisher = True
-                    break
+                if _is_year_only(pub_date):
+                    # Year-only date: month is unknown.
+                    # Same year → could be target month, but we can't tell → skip.
+                    # Different year → use year for definite past/future decision.
+                    if pub_date.year == target_ym[0]:
+                        logger.debug("  year-only %s: %s — ambiguous, skip",
+                                     pub_date.year, stub["title"])
+                        continue
+                    elif pub_date.year < target_ym[0]:
+                        logger.info("  year-only past year %d: %s — stop",
+                                    pub_date.year, stub["title"])
+                        stop_publisher = True
+                        break
+                    else:
+                        logger.debug("  year-only future year %d: %s — skip",
+                                     pub_date.year, stub["title"])
+                        continue
+                else:
+                    book_ym = (pub_date.year, pub_date.month)
+                    if book_ym > target_ym:
+                        logger.debug("  future %s: %s — skip", pub_date, stub["title"])
+                        continue
+                    if book_ym < target_ym:
+                        logger.info("  past %s: %s — stop", pub_date, stub["title"])
+                        stop_publisher = True
+                        break
 
-            # Verify publisher from detail page — safety net if publisherId[] filter
-            # returned books from other publishers (URL filter is best-effort).
+            # Verify publisher from detail page (safety net for imperfect URL filter).
             raw_pub = _extract_publisher_name(soup)
             if raw_pub and not _is_target_publisher(raw_pub):
-                logger.debug("  publisher mismatch '%s': %s — skip", raw_pub, stub["title"])
+                logger.debug("  publisher mismatch '%s': %s — skip",
+                             raw_pub, stub["title"])
                 continue
-            # Use canonical display name from registry, falling back to URL-based name.
             canon_name = _best_display_name(raw_pub) if raw_pub else display_name
 
             premiere = _parse_premiere_book(soup, stub, premiere_month, canon_name)
@@ -357,8 +466,9 @@ def scrape_premieres_for_month(year: int, month: int) -> list[PremiereBook]:
     Scrape lubimyczytac.pl for premieres from KNOWN_PUBLISHERS in the given month.
 
     Each publisher is processed separately:
-      - Binary search to locate the target-month boundary (avoids scanning entire year)
-      - Linear scan from the boundary to collect all target-month books
+      - Binary search to locate the target-month boundary
+      - Linear scan to collect all target-month books
+      - Fallback to no-year URL if year-filtered catalog returns 0 results
     """
     session        = _make_session()
     premiere_month = f"{year:04d}-{month:02d}"
