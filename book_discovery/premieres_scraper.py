@@ -1,29 +1,33 @@
 """
-Premieres scraper v3 — per-publisher pages.
+Premieres scraper v4 — catalog with year+publisher filter, month in code.
 
-Why publisher-specific pages instead of a filtered catalog:
-  The catalog's publisherId[] / publishedMonth URL parameters are unreliable
-  (the catalog returns books from all dates, causing every result to be skipped
-  as pub_date > target_month).  Publisher pages (/wydawnictwo/{id}/{slug}/ksiazki)
-  embed the publisher in the URL path, so the filter is guaranteed.
+History of what didn't work:
+  v1/v2: Catalog with publishedMonth=4 → showed May 2026 books (0-indexed month?)
+  v3:    Publisher pages /wydawnictwo/{id}/{slug}/ksiazki
+           → orderBy/publishedYear params ignored; books shown alphabetically,
+             first book from 2009 triggered immediate "past month" stop.
 
-Strategy per publisher:
-  1. Hit /wydawnictwo/{id}/{slug}/ksiazki?publishedYear={year}&orderBy=publishDate&desc=1
-  2. Parse listing page stubs (title, author, URL, pub_year from card).
-  3. Skip stubs from the wrong year.
-  4. Fetch detail page for exact pub_month + description / cover / ISBN.
-  5. Stop when pub_date falls before the target month.
+v4 approach:
+  • Use /katalog/ksiazki — same AJAX infrastructure as category pages, date
+    sort confirmed working.
+  • publishedYear={year}    — year-level filter (reliable).
+  • NO publishedMonth param — unreliable (0-indexed? ignored?).
+  • publisherId[]={id}      — best-effort publisher filter; also check
+    publisher name on each detail page as fallback.
+  • orderBy=publishDate&desc=1 — newest first.
+  • Month checked in code: skip future months, stop at past months.
+  • "max consecutive all-future pages" guard (MAX_FUTURE_PAGES) prevents
+    infinite scanning when IDs don't filter and many future books appear.
 
-Typical HTTP requests per month:
-  ~1-2 listing pages × 10 publishers = ~15 pages
-  ~5-10 book detail pages × 10 publishers = ~75 detail pages
-  Total: ~90 requests  (vs. 800+ with the broken catalog approach)
+Typical requests per month (publisher IDs working):
+  ~2-5 catalog pages + ~60-80 detail pages ≈ 85 requests
+Fallback (IDs not working, all 2026 books scanned):
+  ~6-8 catalog pages + detail pages for only April books ≈ 100 requests
 """
 
 import logging
 import re
 import unicodedata
-from datetime import date
 from typing import Optional
 
 from bs4 import BeautifulSoup
@@ -41,13 +45,9 @@ from .scraper import (
 
 logger = logging.getLogger(__name__)
 
-MAX_PAGES_PER_PUBLISHER = 10  # safety cap per publisher
-
 # ── Publisher registry ────────────────────────────────────────────────────────
-# (display_name, lubimyczytac_publisher_id, url_slug)
-# IDs can be verified by visiting lubimyczytac.pl/wydawnictwo/{id}/{slug}.
-# If an ID is wrong the scraper simply logs 0 books for that publisher and
-# continues — no crash.
+# (display_name, lubimyczytac_id, url_slug)
+# To verify an ID: open https://lubimyczytac.pl/wydawnictwo/{id}/{slug}
 
 KNOWN_PUBLISHERS: list[tuple[str, int, str]] = [
     ("Marginesy",               2951, "marginesy"),
@@ -62,35 +62,79 @@ KNOWN_PUBLISHERS: list[tuple[str, int, str]] = [
     ("SQN",                     2836, "sqn"),
 ]
 
+PUBLISHER_IDS: list[int] = [pid for _, pid, _ in KNOWN_PUBLISHERS]
+
+MAX_CATALOG_PAGES = 15  # safety cap — with year+publisher filter ≪ 15 pages
+MAX_FUTURE_PAGES  = 5   # stop if N consecutive pages are all future-month books
+
+
+# ── Publisher name matching ───────────────────────────────────────────────────
+
+def _norm(text: str) -> str:
+    """Lowercase + strip diacritics."""
+    nfkd = unicodedata.normalize("NFKD", text.lower().strip())
+    return re.sub(r"\s+", " ", "".join(c for c in nfkd if not unicodedata.combining(c)))
+
+
+_NORM_TARGETS: list[str] = [_norm(name) for name, _, _ in KNOWN_PUBLISHERS]
+
+
+def _is_target_publisher(name: str) -> bool:
+    """Return True if the publisher name matches any entry in KNOWN_PUBLISHERS."""
+    if not name:
+        return False
+    n = _norm(name)
+    for target in _NORM_TARGETS:
+        if target in n or n in target:
+            return True
+    return False
+
+
+def _best_display_name(raw: str) -> str:
+    """Return the canonical display name for a matched publisher."""
+    if not raw:
+        return raw
+    n = _norm(raw)
+    for display, _, _ in KNOWN_PUBLISHERS:
+        target = _norm(display)
+        if target in n or n in target:
+            return display
+    return raw
+
 
 # ── URL builders ──────────────────────────────────────────────────────────────
 
-def _pub_url(pub_id: int, slug: str, year: int, page: int) -> str:
-    """Publisher books page filtered to one year, sorted newest first."""
-    base = f"{BASE_URL}/wydawnictwo/{pub_id}/{slug}/ksiazki"
+def _catalog_url(year: int, page: int) -> str:
+    """Catalog filtered by our publisher IDs + year, sorted by date desc."""
+    pub_qs = "".join(f"&publisherId[]={pid}" for pid in PUBLISHER_IDS)
     return (
-        f"{base}?publishedYear={year}"
-        f"&orderBy=publishDate&desc=1&lang[]=pol"
-        f"&page={page}&paginatorType=url"
+        f"{BASE_URL}/katalog/ksiazki"
+        f"?listId=catalogFilteredList"
+        f"&listType=list"
+        f"{pub_qs}"
+        f"&publishedYear={year}"
+        f"&orderBy=publishDate"
+        f"&desc=1"
+        f"&lang[]=pol"
+        f"&page={page}"
+        f"&paginatorType=url"
     )
 
 
-def _pub_url_simple(pub_id: int, slug: str, year: int, page: int) -> str:
+def _catalog_url_simple(year: int, page: int) -> str:
     """Fallback without AJAX params."""
-    base = f"{BASE_URL}/wydawnictwo/{pub_id}/{slug}/ksiazki"
-    return f"{base}?publishedYear={year}&orderBy=publishDate&desc=1&lang[]=pol&page={page}"
-
-
-def _pub_url_no_year(pub_id: int, slug: str, page: int) -> str:
-    """Second fallback — no year filter, in case publishedYear param isn't supported."""
-    base = f"{BASE_URL}/wydawnictwo/{pub_id}/{slug}/ksiazki"
-    return f"{base}?orderBy=publishDate&desc=1&lang[]=pol&page={page}"
+    pub_qs = "".join(f"&publisherId[]={pid}" for pid in PUBLISHER_IDS)
+    return (
+        f"{BASE_URL}/katalog/ksiazki"
+        f"?publishedYear={year}"
+        f"{pub_qs}"
+        f"&orderBy=publishDate&desc=1&lang[]=pol&page={page}"
+    )
 
 
 # ── Book detail parsing ───────────────────────────────────────────────────────
 
 def _extract_publisher_name(soup: BeautifulSoup) -> Optional[str]:
-    """Read the canonical publisher name from a book's dt/dd section."""
     for dt in soup.find_all("dt"):
         label = dt.get_text(strip=True).lower()
         if "wydawca" in label or "wydawnictwo" in label:
@@ -108,14 +152,9 @@ def _parse_premiere_book(
     premiere_month: str,
     publisher_display: str,
 ) -> Optional[PremiereBook]:
-    """Build a PremiereBook from a parsed book detail page."""
     book_id = extract_book_id(stub["url"])
     if not book_id:
         return None
-
-    # Use canonical name from page if available, fallback to registry display name
-    page_publisher = _extract_publisher_name(soup)
-    publisher = page_publisher or publisher_display
 
     cover_el = soup.find("meta", {"property": "og:image"})
     isbn_el  = soup.find("meta", {"property": "books:isbn"})
@@ -139,7 +178,7 @@ def _parse_premiere_book(
         book_id=book_id,
         title=stub["title"],
         author=stub["author"],
-        publisher=publisher,
+        publisher=publisher_display,
         premiere_month=premiere_month,
         url=stub["url"],
         cover_url=cover_el["content"] if cover_el else None,
@@ -149,83 +188,77 @@ def _parse_premiere_book(
     )
 
 
-# ── Per-publisher scrape ──────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
-def _scrape_one_publisher(
-    session,
-    pub_display: str,
-    pub_id: int,
-    pub_slug: str,
-    year: int,
-    month: int,
-    premiere_month: str,
-    seen_ids: set[str],
-) -> list[PremiereBook]:
+def scrape_premieres_for_month(year: int, month: int) -> list[PremiereBook]:
     """
-    Scrape one publisher's release page for books published in target month.
+    Scrape lubimyczytac.pl for premieres from target publishers in the given month.
 
-    Sorted newest-first, so we encounter target-month books quickly and stop
-    as soon as we hit the previous month.
+    Uses the catalog filtered by publisher IDs + year, sorted newest-first.
+    Month is checked on each book's detail page. Publisher is verified against
+    KNOWN_PUBLISHERS regardless of whether the URL publisher filter worked.
     """
-    books: list[PremiereBook] = []
-    target_ym = (year, month)
-    label = f"[premieres/{premiere_month}/{pub_display}]"
+    session        = _make_session()
+    premiere_month = f"{year:04d}-{month:02d}"
+    target_ym      = (year, month)
 
-    used_no_year_fallback = False
+    books:    list[PremiereBook] = []
+    seen_ids: set[str]           = set()
 
-    for page in range(1, MAX_PAGES_PER_PUBLISHER + 1):
-        url = _pub_url(pub_id, pub_slug, year, page)
-        logger.info("%s page %d", label, page)
-        logger.debug("%s → %s", label, url)
+    future_only_pages = 0   # consecutive pages where every book was from a future month
+
+    logger.info(
+        "=== Premieres: %s — catalog with %d publisher IDs, year=%d ===",
+        premiere_month, len(PUBLISHER_IDS), year,
+    )
+
+    for page in range(1, MAX_CATALOG_PAGES + 1):
+        url = _catalog_url(year, page)
+        logger.info("[premieres/%s] page %d", premiere_month, page)
+        logger.debug("[premieres/%s] → %s", premiere_month, url)
 
         html = _fetch(session, url)
         if not html:
+            logger.warning("[premieres/%s] fetch failed for page %d", premiere_month, page)
             break
         _sleep()
 
         stubs = _parse_listing_page(html)
 
-        # Fallback 1: simpler URL (no AJAX params)
         if not stubs and page == 1:
-            fb = _pub_url_simple(pub_id, pub_slug, year, page)
-            logger.info("%s fallback (simple): %s", label, fb)
+            fb = _catalog_url_simple(year, page)
+            logger.info("[premieres/%s] fallback URL: %s", premiere_month, fb)
             html2 = _fetch(session, fb)
             if html2:
                 stubs = _parse_listing_page(html2)
                 _sleep()
 
-        # Fallback 2: drop year filter (publisher page may not support it)
-        if not stubs and page == 1 and not used_no_year_fallback:
-            fb2 = _pub_url_no_year(pub_id, pub_slug, page)
-            logger.info("%s fallback (no year filter): %s", label, fb2)
-            html3 = _fetch(session, fb2)
-            if html3:
-                stubs = _parse_listing_page(html3)
-                _sleep()
-            used_no_year_fallback = True
-
         if not stubs:
-            logger.info("%s empty page %d — done.", label, page)
+            logger.info("[premieres/%s] empty page %d — done.", premiere_month, page)
             break
 
-        reached_past = False
+        page_has_target = False
+        reached_past    = False
 
         for stub in stubs:
             book_id = extract_book_id(stub["url"])
             if not book_id or book_id in seen_ids:
                 continue
 
-            # Cheap year pre-filter from listing card
+            # Quick year pre-check from listing card (avoids a detail-page fetch)
             pub_year = stub.get("pub_year")
             if pub_year is not None:
                 if pub_year < year:
-                    logger.info("%s year %d < %d on listing — stopping.", label, pub_year, year)
+                    logger.info(
+                        "[premieres/%s] listing year %d < %d — past, stopping.",
+                        premiere_month, pub_year, year,
+                    )
                     reached_past = True
                     break
                 if pub_year > year:
-                    continue  # pre-announced future book — skip
+                    continue  # pre-announced future year
 
-            # Fetch detail page for exact date + description / cover / ISBN
+            # Fetch detail page for exact date + publisher + description
             book_html = _fetch(session, stub["url"])
             if not book_html:
                 _sleep()
@@ -237,70 +270,67 @@ def _scrape_one_publisher(
 
             if pub_date:
                 book_ym = (pub_date.year, pub_date.month)
+                if book_ym > target_ym:
+                    logger.debug(
+                        "[premieres/%s] future date %s: %s — skip",
+                        premiere_month, pub_date, stub["title"],
+                    )
+                    continue  # future book — keep scanning
                 if book_ym < target_ym:
                     logger.info(
-                        "%s pub_date %s < %s — past month, stopping.",
-                        label, pub_date, premiere_month,
+                        "[premieres/%s] past date %s: %s — stop",
+                        premiere_month, pub_date, stub["title"],
                     )
                     reached_past = True
                     break
-                if book_ym > target_ym:
-                    logger.debug(
-                        "%s pub_date %s > %s — future book, skipping.",
-                        label, pub_date, premiere_month,
-                    )
-                    continue
+                # else book_ym == target_ym — fall through to publisher check
 
-            premiere = _parse_premiere_book(soup, stub, premiere_month, pub_display)
+            # Publisher check (works even if publisherId[] param was ignored)
+            raw_publisher = _extract_publisher_name(soup)
+            if raw_publisher and not _is_target_publisher(raw_publisher):
+                logger.debug(
+                    "[premieres/%s] publisher '%s' not in target list: %s",
+                    premiere_month, raw_publisher, stub["title"],
+                )
+                continue
+
+            display_name = _best_display_name(raw_publisher or "")
+            premiere = _parse_premiere_book(soup, stub, premiere_month, display_name or stub.get("title", "?"))
             if premiere:
                 books.append(premiere)
                 seen_ids.add(book_id)
-                logger.info("%s FOUND: %s", label, premiere.title)
+                page_has_target = True
+                logger.info(
+                    "[premieres/%s] FOUND: %-40s | %s",
+                    premiere_month, premiere.title, premiere.publisher,
+                )
 
-        logger.info("%s page %d done — %d found so far", label, page, len(books))
+        logger.info(
+            "[premieres/%s] page %d done — %d books total",
+            premiere_month, page, len(books),
+        )
 
         if reached_past:
+            logger.info("[premieres/%s] Past target month — stopping.", premiere_month)
             break
 
-    logger.info("%s total for this publisher: %d books", label, len(books))
-    return books
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def scrape_premieres_for_month(year: int, month: int) -> list[PremiereBook]:
-    """
-    Scrape all target publishers' release pages for premieres in the given month.
-
-    Each publisher is scraped independently using its dedicated page
-    (/wydawnictwo/{id}/{slug}/ksiazki), so the publisher filter is always
-    applied via the URL path rather than an uncertain query parameter.
-
-    Args:
-        year:  e.g. 2026
-        month: 1–12
-
-    Returns:
-        Deduplicated list of PremiereBook objects.
-    """
-    session        = _make_session()
-    premiere_month = f"{year:04d}-{month:02d}"
-    seen_ids:  set[str]          = set()
-    all_books: list[PremiereBook] = []
-
-    logger.info("=== Premieres scrape: %s — %d publishers ===", premiere_month, len(KNOWN_PUBLISHERS))
-
-    for pub_display, pub_id, pub_slug in KNOWN_PUBLISHERS:
-        books = _scrape_one_publisher(
-            session,
-            pub_display, pub_id, pub_slug,
-            year, month, premiere_month,
-            seen_ids,
-        )
-        all_books.extend(books)
+        if not page_has_target:
+            future_only_pages += 1
+            logger.info(
+                "[premieres/%s] No target-month books on page %d (%d/%d future-only pages)",
+                premiere_month, page, future_only_pages, MAX_FUTURE_PAGES,
+            )
+            if future_only_pages >= MAX_FUTURE_PAGES:
+                logger.warning(
+                    "[premieres/%s] %d consecutive pages with no %s books — aborting.",
+                    premiere_month, MAX_FUTURE_PAGES, premiere_month,
+                )
+                break
+        else:
+            future_only_pages = 0
 
     logger.info(
-        "=== Premieres %s complete: %d total books from %d publishers ===",
-        premiere_month, len(all_books), len(KNOWN_PUBLISHERS),
+        "=== Premieres %s complete: %d books ===",
+        premiere_month, len(books),
     )
-    return all_books
+    return books
