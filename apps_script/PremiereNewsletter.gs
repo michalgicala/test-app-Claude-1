@@ -266,8 +266,8 @@ function buildHtmlEmail_(monthKey, books, sheetId) {
   html += '<div class="footer">' +
     'Archiwum premier: <a href="' + sheetUrl + '">Google Sheets</a> &nbsp;·&nbsp; ' +
     'Newsletter generowany automatycznie przez Book Discovery.<br>' +
-    'Wybrane wydawnictwa: Marginesy, Znak, Czwarta Strona, Wydawnictwo Poznańskie, ' +
-    'Jaguar, Kobiece, Otwarte, W.A.B., Filia, SQN.' +
+    'Wybrane wydawnictwa: Znak (i sub-marki), Marginesy, Czwarta Strona, Wydawnictwo Poznańskie, ' +
+    'Jaguar, Wydawnictwo Kobiece, Otwarte, W.A.B., Filia, Sine Qua Non, PWN.' +
     '</div>';
 
   html += '</div></div></body></html>';

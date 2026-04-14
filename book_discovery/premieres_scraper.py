@@ -6,14 +6,14 @@ History of what didn't work:
   v3:    Publisher pages /wydawnictwo/{id}/{slug}/ksiazki
            → orderBy/publishedYear params ignored; books shown alphabetically,
              first book from 2009 triggered immediate "past month" stop.
+  v4a:   Wrong publisher IDs in KNOWN_PUBLISHERS → publisherId[] filter returned 0.
 
 v4 approach:
   • Use /katalog/ksiazki — same AJAX infrastructure as category pages, date
     sort confirmed working.
   • publishedYear={year}    — year-level filter (reliable).
   • NO publishedMonth param — unreliable (0-indexed? ignored?).
-  • publisherId[]={id}      — best-effort publisher filter; also check
-    publisher name on each detail page as fallback.
+  • publisherId[]={id}      — IDs verified from lubimyczytac.pl publisher URLs.
   • orderBy=publishDate&desc=1 — newest first.
   • Month checked in code: skip future months, stop at past months.
   • "max consecutive all-future pages" guard (MAX_FUTURE_PAGES) prevents
@@ -50,16 +50,21 @@ logger = logging.getLogger(__name__)
 # To verify an ID: open https://lubimyczytac.pl/wydawnictwo/{id}/{slug}
 
 KNOWN_PUBLISHERS: list[tuple[str, int, str]] = [
-    ("Marginesy",               2951, "marginesy"),
-    ("Znak",                      49, "znak"),
-    ("Czwarta Strona",          3427, "czwarta-strona"),
-    ("Wydawnictwo Poznańskie",   160, "wydawnictwo-poznanskie"),
-    ("Jaguar",                  3001, "jaguar"),
-    ("Kobiece",                 2852, "kobiece"),
-    ("Otwarte",                 1965, "otwarte"),
-    ("W.A.B.",                    60, "wab"),
-    ("Filia",                   2876, "filia"),
-    ("SQN",                     2836, "sqn"),
+    # IDs extracted directly from lubimyczytac.pl publisher URLs (verified)
+    ("Znak",                     10760, "znak"),
+    ("Znak Koncept",             29159, "znak-koncept"),
+    ("Znak Horyzont",            10762, "znak-horyzont"),
+    ("Znak Literanova",          10763, "znak-literanova"),
+    ("Marginesy",                 5484, "marginesy"),
+    ("Czwarta Strona",           11085, "czwarta-strona"),
+    ("Wydawnictwo Poznańskie",   10345, "wydawnictwo-poznanskie"),
+    ("Jaguar",                    4373, "jaguar"),
+    ("Wydawnictwo Kobiece",      14841, "wydawnictwo-kobiece"),
+    ("Otwarte",                   6803, "otwarte"),
+    ("W.A.B.",                    9686, "w-a-b"),
+    ("Filia",                     2918, "filia"),
+    ("Sine Qua Non",              8256, "sine-qua-non"),
+    ("Wydawnictwo Naukowe PWN",  10294, "wydawnictwo-naukowe-pwn"),
 ]
 
 PUBLISHER_IDS: list[int] = [pid for _, pid, _ in KNOWN_PUBLISHERS]
